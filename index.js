@@ -25,6 +25,7 @@ const {
 const AUTH_DIR = path.join(__dirname, 'session_auth');
 const TEMP_DIR = path.join(__dirname, 'temp_downloads');
 const HISTORY_FILE = path.join(__dirname, 'upload_history.json');
+const WHITELIST_FILE = path.join(__dirname, 'whitelist.json');
 
 if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR, { recursive: true });
@@ -135,14 +136,91 @@ function normalizePhone(num) {
 }
 
 /**
+ * Mengambil daftar nomor yang diizinkan (gabungan whitelist.json dan .env)
+ */
+function getWhitelist() {
+    let list = [];
+    try {
+        if (fs.existsSync(WHITELIST_FILE)) {
+            list = JSON.parse(fs.readFileSync(WHITELIST_FILE, 'utf8'));
+        }
+    } catch (e) {
+        list = [];
+    }
+    // Gabungkan dengan ALLOWED_NUMBERS dari .env
+    const envAllowed = (process.env.ALLOWED_NUMBERS || '').split(',').map(n => normalizePhone(n)).filter(Boolean);
+    envAllowed.forEach(num => {
+        if (!list.includes(num)) list.push(num);
+    });
+    return list;
+}
+
+/**
+ * Menyimpan whitelist ke file whitelist.json
+ */
+function saveWhitelist(list) {
+    fs.writeFileSync(WHITELIST_FILE, JSON.stringify(list, null, 2));
+}
+
+/**
+ * Menambahkan nomor ke whitelist
+ */
+function addWhitelistUser(number) {
+    const clean = normalizePhone(number);
+    if (!clean || clean.length < 5) return null;
+    let list = getWhitelist();
+    if (!list.includes(clean)) {
+        list.push(clean);
+        saveWhitelist(list);
+    }
+    return clean;
+}
+
+/**
+ * Menghapus nomor dari whitelist
+ */
+function removeWhitelistUser(number) {
+    const clean = normalizePhone(number);
+    if (!clean) return null;
+    let list = getWhitelist();
+    const beforeLen = list.length;
+    list = list.filter(n => n !== clean && !n.endsWith(clean) && !clean.endsWith(n));
+    saveWhitelist(list);
+    return beforeLen !== list.length ? clean : null;
+}
+
+/**
+ * Cek apakah pengirim adalah Owner/Admin bot
+ */
+function isOwner(remoteJid, isFromMe, participant) {
+    if (isFromMe) return true;
+    const jidClean = normalizePhone(remoteJid);
+    const partClean = normalizePhone(participant);
+    const resolvedPhoneJid = normalizePhone(resolveLidToPhone(remoteJid) || '');
+    const resolvedPhonePart = normalizePhone(resolveLidToPhone(participant) || '');
+
+    const candidates = [jidClean, partClean, resolvedPhoneJid, resolvedPhonePart].filter(Boolean);
+
+    // Ambil nomor admin dari .env (default nomor utama Anda)
+    const adminList = (process.env.ALLOWED_NUMBERS || '6281230129867,42331331928234')
+        .split(',')
+        .map(n => normalizePhone(n))
+        .filter(Boolean);
+
+    return adminList.some(admin => 
+        candidates.some(cand => cand === admin || cand.endsWith(admin) || admin.endsWith(cand))
+    );
+}
+
+/**
  * Cek apakah pengirim diizinkan (Whitelist)
  */
 function isSenderAllowed(jid, fromMe, participant) {
     const allowed = process.env.ALLOWED_NUMBERS?.trim();
-    if (!allowed || allowed === '*') return true;
+    if (allowed === '*') return true;
     if (fromMe) return true;
 
-    const allowedList = allowed.split(',').map(n => normalizePhone(n)).filter(Boolean);
+    const allowedList = getWhitelist();
 
     const jidClean = normalizePhone(jid);
     const partClean = normalizePhone(participant);
@@ -346,7 +424,7 @@ async function startBot() {
                         `• Kirim file dokumen/foto/video langsung ke chat ini.\n` +
                         `• Tag folder: tambahkan *#kuliah*, *#kerjaan*, dll pada caption.\n` +
                         `• Rename file: tulis nama baru di caption saat kirim file.\n\n` +
-                        `📋 *2. Perintah Tersedia:*\n` +
+                        `📋 *2. Perintah Pengguna:*\n` +
                         `• *cek* ➔ Melihat 10 riwayat unggahan terbaru\n` +
                         `• *cari <kata kunci>* ➔ Mencari file di Google Drive\n` +
                         `• *kuota* ➔ Cek kapasitas Google Drive Anda\n` +
@@ -354,9 +432,85 @@ async function startBot() {
                         `• *hapus <nomor>* ➔ Hapus file dari Google Drive\n` +
                         `• *hapus terakhir* ➔ Batalkan upload file terakhir\n` +
                         `• *publik <nomor>* ➔ Buka akses file (Anyone with link)\n` +
-                        `• *privat <nomor>* ➔ Kunci akses file kembali privat`;
+                        `• *privat <nomor>* ➔ Kunci akses file kembali privat\n\n` +
+                        `👑 *3. Perintah Admin (Whitelist):*\n` +
+                        `• *+user <nomor>* ➔ Tambah izin user baru\n` +
+                        `• *-user <nomor>* ➔ Hapus izin user\n` +
+                        `• *listuser* ➔ Cek daftar nomor yang diizinkan`;
 
                     await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
+                    continue;
+                }
+
+                // ==========================================
+                // 1B. FITUR MANAJEMEN WHITELIST (+user / -user / listuser)
+                // ==========================================
+                if (lowerText.startsWith('+user') || lowerText.startsWith('tambah user')) {
+                    if (!isOwner(remoteJid, isFromMe, msg.key.participant)) {
+                        await sock.sendMessage(remoteJid, {
+                            text: '⛔ *Akses Ditolak*\nHanya Owner / Admin yang dapat menambah user ke whitelist.'
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    const numTarget = textBody.replace(/^(\+user|tambah user)\s*/i, '').trim();
+                    const added = addWhitelistUser(numTarget);
+
+                    if (!added) {
+                        await sock.sendMessage(remoteJid, {
+                            text: '⚠️ Format nomor tidak valid. Contoh: *+user 081234567890*'
+                        }, { quoted: msg });
+                    } else {
+                        await sock.sendMessage(remoteJid, {
+                            text: `✅ *User Berhasil Ditambahkan!*\n\n` +
+                                  `📱 *Nomor:* ${added}\n` +
+                                  `✨ Sekarang nomor tersebut sudah diizinkan menggunakan bot ini.`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                if (lowerText.startsWith('-user') || lowerText.startsWith('hapus user')) {
+                    if (!isOwner(remoteJid, isFromMe, msg.key.participant)) {
+                        await sock.sendMessage(remoteJid, {
+                            text: '⛔ *Akses Ditolak*\nHanya Owner / Admin yang dapat menghapus user dari whitelist.'
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    const numTarget = textBody.replace(/^(\-user|hapus user)\s*/i, '').trim();
+                    const removed = removeWhitelistUser(numTarget);
+
+                    if (!removed) {
+                        await sock.sendMessage(remoteJid, {
+                            text: '⚠️ Nomor tidak ditemukan dalam daftar whitelist.'
+                        }, { quoted: msg });
+                    } else {
+                        await sock.sendMessage(remoteJid, {
+                            text: `🗑️ *User Berhasil Dihapus!*\n\n` +
+                                  `📱 *Nomor:* ${removed}\n` +
+                                  `Akses nomor tersebut ke bot telah dinonaktifkan.`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                if (lowerText === 'listuser' || lowerText === 'list user' || lowerText === 'users' || lowerText === 'daftar user') {
+                    if (!isOwner(remoteJid, isFromMe, msg.key.participant)) {
+                        await sock.sendMessage(remoteJid, {
+                            text: '⛔ *Akses Ditolak*\nHanya Owner / Admin yang dapat melihat daftar user.'
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    const users = getWhitelist();
+                    let uMsg = `👥 *DAFTAR USER WHITELIST AKTIF (${users.length}):*\n\n`;
+                    users.forEach((u, i) => {
+                        uMsg += `${i + 1}. 📱 *${u}*\n`;
+                    });
+                    uMsg += `\n💡 *Perintah Kelola:*\n• *+user <nomor>* ➔ Tambah izin user\n• *-user <nomor>* ➔ Hapus izin user`;
+
+                    await sock.sendMessage(remoteJid, { text: uMsg }, { quoted: msg });
                     continue;
                 }
 
