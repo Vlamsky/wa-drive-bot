@@ -770,7 +770,7 @@ async function startBot() {
                 if (lowerText === 'cek' || lowerText === 'daftar' || lowerText === 'list' || lowerText === 'riwayat' || (userIsOwner && (lowerText === 'cek all' || lowerText === 'list all'))) {
                     const isCheckAll = userIsOwner && (lowerText === 'cek all' || lowerText === 'list all');
                     const targetUploader = isCheckAll ? 'ALL' : senderClean;
-                    const history = getHistory(targetUploader, 15);
+                    const history = getHistory(targetUploader, 10);
                     if (history.length === 0) {
                         await sock.sendMessage(remoteJid, {
                             text: isCheckAll 
@@ -789,15 +789,32 @@ async function startBot() {
                         if (displayFolder.includes('/')) {
                             displayFolder = displayFolder.split('/').slice(1).join('/');
                         }
-                        listText += `${index + 1}. \`${item.name}\` (${item.size})\n`;
+                        const previewLink = item.id 
+                            ? `https://drive.google.com/open?id=${item.id}` 
+                            : (item.link || '');
+
+                        listText += `${index + 1}. *${item.name}* (${item.size})\n`;
+
+                        const meta = [];
                         if (isCheckAll && (item.uploaderName || item.uploader)) {
-                            listText += `   Oleh: ${item.uploaderName || item.uploader} • `;
-                        } else {
-                            listText += `   `;
+                            meta.push(`👤 ${item.uploaderName || item.uploader}`);
                         }
-                        listText += `${displayFolder ? `Folder: \`${displayFolder}\` • ` : ''}${item.time}\n\n`;
+                        if (displayFolder) {
+                            meta.push(`📁 ${displayFolder}`);
+                        }
+                        if (item.time) {
+                            meta.push(`${item.time}`);
+                        }
+                        if (meta.length > 0) {
+                            listText += `   ${meta.join(' • ')}\n`;
+                        }
+                        if (previewLink) {
+                            listText += `   🔗 ${previewLink}\n`;
+                        }
+                        listText += `\n`;
                     });
-                    listText += `_Aksi: \`ambil 1\`, \`hapus 1\`, \`hapus 1-3\`, atau \`link 1\`_`;
+
+                    listText += `_Aksi: \`ambil <no>\` untuk unduh, \`hapus <no>\` atau \`hapus 1-3\` untuk delete._`;
 
                     await sock.sendMessage(remoteJid, { text: listText.trim() }, { quoted: msg });
                     continue;
@@ -864,9 +881,14 @@ async function startBot() {
 
                         let searchMsg = `*Hasil Pencarian: "${query}"*\n\n`;
                         results.forEach((file, index) => {
-                            searchMsg += `${index + 1}. \`${file.name}\` (${file.size || 'N/A'})\n`;
-                            if (file.folder) searchMsg += `   Folder: \`${file.folder}\`\n`;
-                            searchMsg += `   Link: ${file.link || file.webViewLink}\n\n`;
+                            const pLink = file.id ? `https://drive.google.com/open?id=${file.id}` : (file.link || file.webViewLink || '');
+                            let fName = file.folder || '';
+                            if (fName.includes('/')) fName = fName.split('/').slice(1).join('/');
+
+                            searchMsg += `${index + 1}. *${file.name}* (${file.size || 'N/A'})\n`;
+                            if (fName) searchMsg += `   📁 ${fName}\n`;
+                            if (pLink) searchMsg += `   🔗 ${pLink}\n`;
+                            searchMsg += `\n`;
                         });
                         searchMsg += `_Ketik \`ambil [nama file]\` untuk mengunduh ke WA._`;
 
