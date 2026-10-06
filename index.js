@@ -12,7 +12,14 @@ const qrcode = require('qrcode-terminal');
 const mime = require('mime-types');
 require('dotenv').config();
 
-const { uploadFileStream, deleteFileFromDrive } = require('./googleDrive');
+const { 
+    uploadFileStream, 
+    deleteFileFromDrive, 
+    getDriveQuota, 
+    searchDriveFiles, 
+    downloadFileFromDrive, 
+    setFilePermission 
+} = require('./googleDrive');
 
 // Direktori penyimpanan session WhatsApp, folder sementara, dan riwayat
 const AUTH_DIR = path.join(__dirname, 'session_auth');
@@ -24,7 +31,7 @@ if (!fs.existsSync(TEMP_DIR)) {
 }
 
 /**
- * Format bytes menjadi ukuran yang mudah dibaca (KB, MB, GB)
+ * Format bytes menjadi ukuran yang mudah dibaca (KB, MB, GB, TB)
  */
 function formatBytes(bytes, decimals = 2) {
     if (!bytes || bytes === 0) return '0 Bytes';
@@ -33,6 +40,17 @@ function formatBytes(bytes, decimals = 2) {
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+/**
+ * Membuat visual progress bar (contoh: [████████░░░░] 60%)
+ */
+function makeProgressBar(percent) {
+    const totalBars = 10;
+    const clamped = Math.max(0, Math.min(100, percent));
+    const filled = Math.round((clamped / 100) * totalBars);
+    const empty = totalBars - filled;
+    return '[' + '█'.repeat(filled) + '░'.repeat(empty) + ']';
 }
 
 /**
@@ -47,8 +65,8 @@ function saveToHistory(entry) {
     } catch (e) {
         history = [];
     }
-    history.unshift(entry); // Masukkan paling depan (terbaru)
-    if (history.length > 50) history = history.slice(0, 50); // Simpan 50 terakhir
+    history.unshift(entry);
+    if (history.length > 50) history = history.slice(0, 50);
     fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
 }
 
@@ -82,37 +100,12 @@ function getHistory(limit = 10) {
 }
 
 /**
- * Menghapus pesan dengan aman
- */
-async function deleteMessage(sock, remoteJid, messageKey) {
-    if (!messageKey) return;
-    try {
-        await sock.sendMessage(remoteJid, { delete: messageKey });
-    } catch (e) {
-        // Abaikan jika pesan sudah terhapus
-    }
-}
-
-/**
- * Menjadwalkan penghapusan pesan otomatis setelah N menit
- */
-function scheduleAutoDelete(sock, remoteJid, messageKey, minutes) {
-    const min = Number(minutes || 0);
-    if (min <= 0 || !messageKey) return;
-
-    setTimeout(async () => {
-        await deleteMessage(sock, remoteJid, messageKey);
-    }, min * 60 * 1000);
-}
-
-/**
  * Mengubah WhatsApp LID (Privacy ID) menjadi nomor telepon asli berdasarkan sesi Baileys
  */
 function resolveLidToPhone(rawJid) {
     if (!rawJid) return null;
     const clean = rawJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 
-    // Cek file mapping di folder session_auth
     try {
         if (fs.existsSync(AUTH_DIR)) {
             const files = fs.readdirSync(AUTH_DIR);
@@ -132,7 +125,7 @@ function resolveLidToPhone(rawJid) {
 }
 
 /**
- * Normalisasi format nomor telepon (menghilangkan prefix 0, tanda +, @s.whatsapp.net, :device)
+ * Normalisasi format nomor telepon
  */
 function normalizePhone(num) {
     if (!num) return '';
@@ -147,35 +140,25 @@ function normalizePhone(num) {
 function isSenderAllowed(jid, fromMe, participant) {
     const allowed = process.env.ALLOWED_NUMBERS?.trim();
     if (!allowed || allowed === '*') return true;
-    if (fromMe) return true; // Pesan dari bot sendiri selalu diizinkan
+    if (fromMe) return true;
 
     const allowedList = allowed.split(',').map(n => normalizePhone(n)).filter(Boolean);
 
-    // Ambil JID bersih
     const jidClean = normalizePhone(jid);
     const partClean = normalizePhone(participant);
 
-    // Otomatis terjemahkan jika pengirim menggunakan WhatsApp Privacy LID (@lid)
     const resolvedPhoneJid = normalizePhone(resolveLidToPhone(jid) || '');
     const resolvedPhonePart = normalizePhone(resolveLidToPhone(participant) || '');
 
     const candidates = [jidClean, partClean, resolvedPhoneJid, resolvedPhonePart].filter(Boolean);
 
-    const isMatch = allowedList.some(num => 
+    return allowedList.some(num => 
         candidates.some(cand => cand === num || cand.endsWith(num) || num.endsWith(cand))
     );
-
-    if (!isMatch) {
-        console.log(`⛔ Pesan/File dari [${jidClean || jid}] diabaikan karena tidak cocok dengan ALLOWED_NUMBERS: [${allowedList.join(', ')}]`);
-    } else if (resolvedPhoneJid) {
-        console.log(`🔓 Mengenali pengirim via WhatsApp LID [${jidClean}] -> Nomor Asli: [${resolvedPhoneJid}]`);
-    }
-
-    return isMatch;
 }
 
 /**
- * Mengekstrak payload media dari berbagai jenis pesan
+ * Mengekstrak payload media dan caption dari berbagai jenis pesan
  */
 function extractMediaContent(message) {
     if (!message) return null;
@@ -185,35 +168,43 @@ function extractMediaContent(message) {
                      message.documentWithCaptionMessage?.message || 
                      message;
 
+    let caption = '';
+
     if (unwrapMsg.documentMessage) {
+        caption = unwrapMsg.documentMessage.caption || message.documentWithCaptionMessage?.message?.documentMessage?.caption || '';
         return {
             type: 'document',
             payload: unwrapMsg.documentMessage,
             fileName: unwrapMsg.documentMessage.fileName || `doc_${Date.now()}`,
             mimetype: unwrapMsg.documentMessage.mimetype || 'application/octet-stream',
-            fileLength: Number(unwrapMsg.documentMessage.fileLength || 0)
+            fileLength: Number(unwrapMsg.documentMessage.fileLength || 0),
+            caption: caption.trim()
         };
     }
 
     if (unwrapMsg.imageMessage) {
+        caption = unwrapMsg.imageMessage.caption || '';
         const ext = mime.extension(unwrapMsg.imageMessage.mimetype) || 'jpg';
         return {
             type: 'image',
             payload: unwrapMsg.imageMessage,
             fileName: `IMG_${Date.now()}.${ext}`,
             mimetype: unwrapMsg.imageMessage.mimetype || 'image/jpeg',
-            fileLength: Number(unwrapMsg.imageMessage.fileLength || 0)
+            fileLength: Number(unwrapMsg.imageMessage.fileLength || 0),
+            caption: caption.trim()
         };
     }
 
     if (unwrapMsg.videoMessage) {
+        caption = unwrapMsg.videoMessage.caption || '';
         const ext = mime.extension(unwrapMsg.videoMessage.mimetype) || 'mp4';
         return {
             type: 'video',
             payload: unwrapMsg.videoMessage,
             fileName: `VID_${Date.now()}.${ext}`,
             mimetype: unwrapMsg.videoMessage.mimetype || 'video/mp4',
-            fileLength: Number(unwrapMsg.videoMessage.fileLength || 0)
+            fileLength: Number(unwrapMsg.videoMessage.fileLength || 0),
+            caption: caption.trim()
         };
     }
 
@@ -224,7 +215,8 @@ function extractMediaContent(message) {
             payload: unwrapMsg.audioMessage,
             fileName: `AUD_${Date.now()}.${ext}`,
             mimetype: unwrapMsg.audioMessage.mimetype || 'audio/mpeg',
-            fileLength: Number(unwrapMsg.audioMessage.fileLength || 0)
+            fileLength: Number(unwrapMsg.audioMessage.fileLength || 0),
+            caption: ''
         };
     }
 
@@ -232,7 +224,7 @@ function extractMediaContent(message) {
 }
 
 /**
- * Mengunduh media secara streaming ke file lokal (Hemat RAM)
+ * Mengunduh media secara streaming ke file lokal
  */
 async function downloadMediaToDisk(mediaPayload, mediaType, outputPath) {
     const stream = await downloadContentFromMessage(mediaPayload, mediaType);
@@ -287,10 +279,9 @@ async function startBot() {
             }
         } else if (connection === 'open') {
             console.log('==================================================');
-            console.log('✅ BOT WHATSAPP BERHASIL AKTIF & SIAP DIGUNAKAN!');
+            console.log('✅ BOT WHATSAPP GOOGLE DRIVE PREMIUM SUDAH AKTIF!');
             console.log('==================================================');
-            console.log('💡 Perintah teks tersedia: ketik "cek" untuk riwayat unggahan.');
-            console.log('💡 Pesan status proses akan otomatis dibersihkan.');
+            console.log('💡 Semua 6 fitur premium siap digunakan.');
             console.log('--------------------------------------------------\n');
         }
     });
@@ -308,14 +299,41 @@ async function startBot() {
 
                 if (!isSenderAllowed(remoteJid, isFromMe, msg.key.participant)) continue;
 
-                // 1. CEK PERINTAH TEKS ("cek", "daftar", "list", "riwayat", "help")
                 const textBody = (
                     msg.message.conversation || 
                     msg.message.extendedTextMessage?.text || 
                     ''
-                ).trim().toLowerCase();
+                ).trim();
+                const lowerText = textBody.toLowerCase();
 
-                if (textBody === 'cek' || textBody === 'daftar' || textBody === 'list' || textBody === 'riwayat') {
+                // ==========================================
+                // 1. FITUR MENU / HELP
+                // ==========================================
+                if (lowerText === 'menu' || lowerText === 'help' || lowerText === 'bantuan') {
+                    const menuText = 
+                        `✨ *MENU ASISTEN GOOGLE DRIVE* ✨\n\n` +
+                        `📁 *1. Upload File Otomatis:*\n` +
+                        `• Kirim file dokumen/foto/video langsung ke chat ini.\n` +
+                        `• Tag folder: tambahkan *#kuliah*, *#kerjaan*, dll pada caption.\n` +
+                        `• Rename file: tulis nama baru di caption saat kirim file.\n\n` +
+                        `📋 *2. Perintah Tersedia:*\n` +
+                        `• *cek* ➔ Melihat 10 riwayat unggahan terbaru\n` +
+                        `• *cari <kata kunci>* ➔ Mencari file di Google Drive\n` +
+                        `• *kuota* ➔ Cek kapasitas Google Drive Anda\n` +
+                        `• *ambil <nomor>* ➔ Kirim file Drive ke WhatsApp\n` +
+                        `• *hapus <nomor>* ➔ Hapus file dari Google Drive\n` +
+                        `• *hapus terakhir* ➔ Batalkan upload file terakhir\n` +
+                        `• *publik <nomor>* ➔ Buka akses file (Anyone with link)\n` +
+                        `• *privat <nomor>* ➔ Kunci akses file kembali privat`;
+
+                    await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
+                    continue;
+                }
+
+                // ==========================================
+                // 2. FITUR CEK RIWAYAT
+                // ==========================================
+                if (lowerText === 'cek' || lowerText === 'daftar' || lowerText === 'list' || lowerText === 'riwayat') {
                     const history = getHistory(10);
                     if (history.length === 0) {
                         await sock.sendMessage(remoteJid, {
@@ -327,32 +345,197 @@ async function startBot() {
                     let listText = `📋 *DAFTAR UNGGAHAN TERBARU (${history.length}):*\n\n`;
                     history.forEach((item, index) => {
                         listText += `*${index + 1}.* 📄 *${item.name}* (${item.size})\n`;
+                        if (item.folder) listText += `   📁 Folder: *${item.folder}*\n`;
                         listText += `   🕒 ${item.time}\n`;
                         listText += `   🔗 ${item.link}\n\n`;
                     });
-                    listText += `💡 *Cara Menghapus:*\n`;
-                    listText += `• Balas dengan: *hapus 1* (untuk menghapus no 1)\n`;
-                    listText += `• Balas dengan: *hapus terakhir* (untuk membatalkan upload terakhir)\n`;
-                    listText += `• Atau swipe reply pesan bot lalu ketik: *hapus*`;
+                    listText += `💡 *Aksi Cepat:*\n`;
+                    listText += `• Ketik *ambil 1* untuk download ke WA\n`;
+                    listText += `• Ketik *hapus 1* untuk menghapus file\n`;
+                    listText += `• Ketik *publik 1* / *privat 1* untuk ubah akses`;
 
-                    await sock.sendMessage(remoteJid, {
-                        text: listText
-                    }, { quoted: msg });
+                    await sock.sendMessage(remoteJid, { text: listText }, { quoted: msg });
                     continue;
                 }
 
-                // 2. CEK PERINTAH HAPUS ("hapus 1", "hapus terakhir", "del 2", "batal", atau reply pesan bot)
-                if (textBody.startsWith('hapus') || textBody.startsWith('del') || textBody === 'batal') {
+                // ==========================================
+                // 3. FITUR CEK KUOTA (STORAGE BAR)
+                // ==========================================
+                if (lowerText === 'kuota' || lowerText === 'storage' || lowerText === 'kapasitas') {
+                    try {
+                        const quotaData = await getDriveQuota();
+                        const { limit, usage } = quotaData.storageQuota;
+                        const user = quotaData.user;
+
+                        const numLimit = Number(limit || 0);
+                        const numUsage = Number(usage || 0);
+                        const percent = numLimit > 0 ? Math.round((numUsage / numLimit) * 100) : 0;
+                        const progressBar = makeProgressBar(percent);
+
+                        const quotaMsg = 
+                            `📊 *STATUS KAPASITAS GOOGLE DRIVE*\n\n` +
+                            `👤 *Akun:* ${user.displayName} (${user.emailAddress})\n\n` +
+                            `Status: ${progressBar} *${percent}%*\n` +
+                            `💾 *Terpakai:* ${formatBytes(numUsage)}\n` +
+                            `📦 *Total Kuota:* ${numLimit > 0 ? formatBytes(numLimit) : 'Tak Terbatas'}\n` +
+                            `🆓 *Sisa Tersedia:* ${numLimit > 0 ? formatBytes(numLimit - numUsage) : 'Tak Terbatas'}\n\n` +
+                            `✨ _Data akurat langsung dari Google Drive API._`;
+
+                        await sock.sendMessage(remoteJid, { text: quotaMsg }, { quoted: msg });
+                    } catch (err) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `❌ Gagal mengambil info kuota: ${err.message}`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 4. FITUR CARI FILE (SEARCH)
+                // ==========================================
+                if (lowerText.startsWith('cari ') || lowerText.startsWith('search ')) {
+                    const query = textBody.replace(/^(cari|search)\s+/i, '').trim();
+                    if (!query) {
+                        await sock.sendMessage(remoteJid, {
+                            text: '💡 Masukkan kata kunci pencarian. Contoh: *cari konseling* atau *cari laporan*'
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    try {
+                        const results = await searchDriveFiles(query, 5);
+                        if (results.length === 0) {
+                            await sock.sendMessage(remoteJid, {
+                                text: `🔍 *Tidak Ditemukan*\nTidak ada file di Google Drive dengan kata kunci "${query}".`
+                            }, { quoted: msg });
+                            continue;
+                        }
+
+                        let searchMsg = `🔍 *HASIL PENCARIAN GOOGLE DRIVE*\nKata kunci: _"${query}"_\n\n`;
+                        results.forEach((file, index) => {
+                            searchMsg += `*${index + 1}.* 📄 *${file.name}* (${formatBytes(file.size || 0)})\n`;
+                            searchMsg += `   🔗 ${file.webViewLink}\n\n`;
+                        });
+                        searchMsg += `💡 Ketik *ambil [nama/link]* untuk meminta bot mengirim file ke WA.`;
+
+                        await sock.sendMessage(remoteJid, { text: searchMsg }, { quoted: msg });
+                    } catch (err) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `❌ Gagal mencari file: ${err.message}`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 5. FITUR AMBIL FILE DARI DRIVE KE WA
+                // ==========================================
+                if (lowerText.startsWith('ambil') || lowerText.startsWith('download') || lowerText.startsWith('get')) {
+                    const matchNum = lowerText.match(/^(ambil|download|get)\s+(\d+)$/);
+                    let targetFile = null;
+
+                    if (matchNum) {
+                        const index = parseInt(matchNum[2], 10);
+                        const history = getHistory(50);
+                        if (index >= 1 && index <= history.length) {
+                            targetFile = history[index - 1];
+                        }
+                    }
+
+                    if (!targetFile) {
+                        const query = textBody.replace(/^(ambil|download|get)\s+/i, '').trim();
+                        if (query) {
+                            const searchRes = await searchDriveFiles(query, 1);
+                            if (searchRes.length > 0) {
+                                targetFile = searchRes[0];
+                            }
+                        }
+                    }
+
+                    if (!targetFile) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `⚠️ File tidak ditemukan. Ketik *cek* untuk melihat nomor urut (contoh: *ambil 1*) atau ketik *cari <nama file>*.`
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    try {
+                        await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
+
+                        const downloadPath = path.join(TEMP_DIR, `get_${Date.now()}_${targetFile.name}`);
+                        await downloadFileFromDrive(targetFile.id, downloadPath);
+
+                        await sock.sendMessage(remoteJid, {
+                            document: fs.readFileSync(downloadPath),
+                            fileName: targetFile.name,
+                            mimetype: targetFile.mimeType || 'application/octet-stream',
+                            caption: `📥 *File dari Google Drive:* ${targetFile.name}`
+                        }, { quoted: msg });
+
+                        try { fs.unlinkSync(downloadPath); } catch (e) {}
+                        await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
+                    } catch (err) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `❌ Gagal mengunduh file dari Google Drive: ${err.message}`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 6. FITUR PERMISSION (PUBLIK / PRIVAT)
+                // ==========================================
+                if (lowerText.startsWith('publik') || lowerText.startsWith('public') || 
+                    lowerText.startsWith('privat') || lowerText.startsWith('private')) {
+                    
+                    const isPublic = lowerText.startsWith('publik') || lowerText.startsWith('public');
+                    const matchNum = lowerText.match(/^(publik|public|privat|private)\s+(\d+)$/);
+
+                    let targetItem = null;
+                    if (matchNum) {
+                        const index = parseInt(matchNum[2], 10);
+                        const history = getHistory(50);
+                        if (index >= 1 && index <= history.length) {
+                            targetItem = history[index - 1];
+                        }
+                    }
+
+                    if (!targetItem) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `💡 Contoh penggunaan: *publik 1* (agar bisa dibuka siapa saja) atau *privat 1* (agar dikunci).`
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    try {
+                        await setFilePermission(targetItem.id, isPublic);
+                        const statusDesc = isPublic 
+                            ? `🌐 *Akses Diubah Menjadi PUBLIK*\nSiapa saja yang memiliki link sekarang dapat melihat & mendownload file *${targetItem.name}*.`
+                            : `🔒 *Akses Diubah Menjadi PRIVAT*\nAkses file *${targetItem.name}* telah dikunci kembali hanya untuk akun Google Anda.`;
+
+                        await sock.sendMessage(remoteJid, { text: statusDesc }, { quoted: msg });
+                    } catch (err) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `❌ Gagal mengubah hak akses file: ${err.message}`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 7. FITUR HAPUS FILE
+                // ==========================================
+                if (lowerText.startsWith('hapus') || lowerText.startsWith('del') || lowerText === 'batal') {
                     const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
                     const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
                     
                     let targetItem = null;
 
-                    if (textBody === 'batal' || textBody === 'hapus terakhir' || textBody === 'del last') {
+                    if (lowerText === 'batal' || lowerText === 'hapus terakhir' || lowerText === 'del last') {
                         const history = getHistory(1);
                         targetItem = history[0];
-                    } else if (textBody.match(/^(hapus|del)\s+(\d+)$/)) {
-                        const match = textBody.match(/^(hapus|del)\s+(\d+)$/);
+                    } else if (lowerText.match(/^(hapus|del)\s+(\d+)$/)) {
+                        const match = lowerText.match(/^(hapus|del)\s+(\d+)$/);
                         const index = parseInt(match[2], 10);
                         const history = getHistory(50);
                         if (index >= 1 && index <= history.length) {
@@ -372,10 +555,10 @@ async function startBot() {
                         );
                     } else {
                         await sock.sendMessage(remoteJid, {
-                            text: `💡 *Panduan Menghapus File di Google Drive:*\n\n` +
-                                  `• Ketik *hapus 1* ➔ Hapus file urutan ke-1 di daftar\n` +
+                            text: `💡 *Panduan Menghapus File:*\n\n` +
+                                  `• Ketik *hapus 1* ➔ Hapus file urutan no 1 di daftar *cek*\n` +
                                   `• Ketik *hapus terakhir* ➔ Hapus file paling baru\n` +
-                                  `• Atau *Swipe Reply* pesan hasil unggahan bot lalu ketik *hapus*`
+                                  `• Atau *Swipe Reply* pesan bot lalu ketik *hapus*`
                         }, { quoted: msg });
                         continue;
                     }
@@ -387,13 +570,8 @@ async function startBot() {
                         continue;
                     }
 
-                    // Beri reaksi emoji tempat sampah 🗑️
                     try {
                         await sock.sendMessage(remoteJid, { react: { text: '🗑️', key: msg.key } });
-                    } catch (e) {}
-
-                    try {
-                        console.log(`🗑️ Menghapus file "${targetItem.name}" (ID: ${targetItem.id}) dari Google Drive...`);
                         await deleteFileFromDrive(targetItem.id);
                         deleteFromHistory(targetItem.id);
 
@@ -401,80 +579,87 @@ async function startBot() {
                             text: `🗑️ *File Berhasil Dihapus!*\n\n` +
                                   `📄 *Nama File:* ${targetItem.name}\n` +
                                   `📦 *Ukuran:* ${targetItem.size}\n\n` +
-                                  `✨ _File telah dihapus dari Google Drive Anda._`
+                                  `✨ _File telah dihapus secara permanen dari Google Drive._`
                         }, { quoted: msg });
-                        console.log(`✅ File "${targetItem.name}" sukses dihapus.`);
                     } catch (err) {
-                        console.error('❌ Gagal menghapus file dari Drive:', err);
                         await sock.sendMessage(remoteJid, {
-                            text: `❌ *Gagal Menghapus File*\n\nAlasan: ${err.message}`
+                            text: `❌ *Gagal Menghapus File:* ${err.message}`
                         }, { quoted: msg });
                     }
                     continue;
                 }
 
-                // 2. CEK FILE MEDIA
+                // ==========================================
+                // 8. PROSES UNGGAH FILE MEDIA (DOKUMEN / FOTO / VIDEO)
+                // ==========================================
                 const mediaInfo = extractMediaContent(msg.message);
                 if (!mediaInfo) continue;
 
-                const { type: mediaType, payload, fileName, mimetype, fileLength } = mediaInfo;
+                let { type: mediaType, payload, fileName, mimetype, fileLength, caption } = mediaInfo;
+
+                // FITUR 1: DETEKSI CUSTOM FOLDER DARI TAG CAPTION (misal #kuliah, #kerjaan)
+                let customFolder = null;
+                const folderMatch = caption.match(/#([a-zA-Z0-9_-]+)/);
+                if (folderMatch) {
+                    customFolder = folderMatch[1];
+                }
+
+                // FITUR 2: AUTO RENAME FILE DARI CAPTION
+                let renameText = caption.replace(/#([a-zA-Z0-9_-]+)/g, '').trim();
+                if (renameText && renameText.length > 0) {
+                    const ext = path.extname(fileName) || `.${mime.extension(mimetype) || 'bin'}`;
+                    if (!renameText.toLowerCase().endsWith(ext.toLowerCase())) {
+                        fileName = `${renameText}${ext}`;
+                    } else {
+                        fileName = renameText;
+                    }
+                }
 
                 // Cek batas ukuran
                 const maxMb = Number(process.env.MAX_FILE_SIZE_MB || 2000);
                 const maxBytes = maxMb * 1024 * 1024;
                 if (fileLength > maxBytes) {
-                    const warnMsg = await sock.sendMessage(remoteJid, {
+                    await sock.sendMessage(remoteJid, {
                         text: `⚠️ *File Terlalu Besar*\nFile *${fileName}* (${formatBytes(fileLength)}) melebihi batas konfigurasi ${maxMb} MB.`,
                     }, { quoted: msg });
-                    scheduleAutoDelete(sock, remoteJid, warnMsg.key, 3);
                     continue;
                 }
 
-                console.log(`\n📥 Menerima file: "${fileName}" [${formatBytes(fileLength)}] dari ${senderJid}`);
+                console.log(`\n📥 Menerima: "${fileName}" [${formatBytes(fileLength)}] folder: [${customFolder || 'default'}]`);
 
-                // Step 1: Beri reaksi emoji ⏳ pada file yang dikirim
+                // Reaksi ⏳ saat download dimulai
                 try {
-                    await sock.sendMessage(remoteJid, {
-                        react: { text: '⏳', key: msg.key }
-                    });
+                    await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
                 } catch (e) {}
 
                 const tempFileName = `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
                 const tempFilePath = path.join(TEMP_DIR, tempFileName);
 
-                // Step 2: Download file via stream
                 await downloadMediaToDisk(payload, mediaType, tempFilePath);
                 const stats = fs.statSync(tempFilePath);
 
-                // Step 3: Update reaksi emoji menjadi ☁️ (Sedang mengunggah ke Google Drive)
+                // Reaksi ☁️ saat upload ke Drive dimulai
                 try {
-                    await sock.sendMessage(remoteJid, {
-                        react: { text: '☁️', key: msg.key }
-                    });
+                    await sock.sendMessage(remoteJid, { react: { text: '☁️', key: msg.key } });
                 } catch (e) {}
 
-                // Step 4: Upload ke Google Drive
+                // Upload ke Google Drive dengan dukungan custom folder
                 const uploadResult = await uploadFileStream({
                     filePath: tempFilePath,
                     fileName: fileName,
-                    mimeType: mimetype
+                    mimeType: mimetype,
+                    customFolder: customFolder
                 });
 
-                console.log(`✅ Berhasil diunggah ke Google Drive: ${uploadResult.name}`);
+                console.log(`✅ Sukses upload ke Google Drive: ${uploadResult.name} (Folder: ${uploadResult.folderName})`);
 
-                // Hapus file lokal sementara
+                try { fs.unlinkSync(tempFilePath); } catch (e) {}
+
+                // Reaksi ✅ saat selesai
                 try {
-                    fs.unlinkSync(tempFilePath);
+                    await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
                 } catch (e) {}
 
-                // Step 5: Update reaksi emoji menjadi ✅ (Selesai!)
-                try {
-                    await sock.sendMessage(remoteJid, {
-                        react: { text: '✅', key: msg.key }
-                    });
-                } catch (e) {}
-
-                // Simpan ke riwayat lokal
                 const now = new Date();
                 const timeStr = now.toLocaleDateString('id-ID', {
                     day: '2-digit', month: 'short', year: 'numeric',
@@ -487,37 +672,28 @@ async function startBot() {
                     name: uploadResult.name,
                     size: formatBytes(uploadResult.size || stats.size),
                     time: timeStr,
-                    link: directLink
+                    link: directLink,
+                    folder: uploadResult.folderName
                 });
 
-                // Step 6: Kirim HANYA SATU pesan hasil akhir yang rapi
+                // Kirim notifikasi hasil yang sangat rapi
                 const successMessage = 
                     `✅ *Berhasil Diunggah ke Google Drive!*\n\n` +
                     `📄 *Nama File:* ${uploadResult.name}\n` +
+                    `📁 *Folder:* ${uploadResult.folderName}\n` +
                     `📦 *Ukuran:* ${formatBytes(uploadResult.size || stats.size)}\n` +
                     `🔗 *Link Google Drive:*\n${directLink}\n\n` +
                     `✨ _File tersimpan dalam resolusi asli tanpa kompresi._\n` +
-                    `💡 _Ketik *cek* untuk melihat riwayat semua unggahan._`;
+                    `💡 _Ketik *menu* untuk melihat fitur lainnya._`;
 
-                const msgSuccess = await sock.sendMessage(remoteJid, {
-                    text: successMessage
-                }, { quoted: msg });
-
-                // Auto delete opsional (jika diaktifkan > 0 di .env)
-                const autoDeleteMin = Number(process.env.AUTO_DELETE_SUCCESS_MINUTES || 0);
-                if (autoDeleteMin > 0) {
-                    scheduleAutoDelete(sock, remoteJid, msgSuccess.key, autoDeleteMin);
-                }
+                await sock.sendMessage(remoteJid, { text: successMessage }, { quoted: msg });
 
             } catch (err) {
                 console.error('❌ Terjadi kesalahan saat memproses file:', err);
                 try {
-                    // Reaksi silang ❌ jika gagal
+                    await sock.sendMessage(msg.key.remoteJid, { react: { text: '❌', key: msg.key } });
                     await sock.sendMessage(msg.key.remoteJid, {
-                        react: { text: '❌', key: msg.key }
-                    });
-                    await sock.sendMessage(msg.key.remoteJid, {
-                        text: `❌ *Gagal Mengunggah ke Google Drive*\n\nAlasan: ${err.message}`
+                        text: `❌ *Gagal Mengunggah ke Google Drive:*\n\n${err.message}`
                     }, { quoted: msg });
                 } catch (e) {}
             }

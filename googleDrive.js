@@ -22,7 +22,7 @@ function getOAuth2Client() {
 
     const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
     const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
-    const redirectUri = (redirect_uris && redirect_uris[0]) || 'urn:ietf:wg:oauth:2.0:oob';
+    const redirectUri = (redirect_uris && redirect_uris[0]) || 'http://localhost';
     
     return new google.auth.OAuth2(client_id, client_secret, redirectUri);
 }
@@ -88,15 +88,18 @@ async function getOrCreateFolder(drive, folderName, parentId = null) {
 }
 
 /**
- * Upload file besar via stream ke Google Drive
+ * Upload file besar via stream ke Google Drive (Mendukung custom folder dari caption tag)
  */
-async function uploadFileStream({ filePath, fileName, mimeType }) {
+async function uploadFileStream({ filePath, fileName, mimeType, customFolder = null }) {
     const drive = await getDriveClient();
     let targetFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID?.trim() || null;
 
-    // Jika fitur sub-folder tanggal aktif
-    if (process.env.AUTO_DATE_FOLDER === 'true') {
-        const today = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
+    if (customFolder) {
+        // Jika pengirim memberikan tag folder (contoh: #kuliah, #kerjaan)
+        targetFolderId = await getOrCreateFolder(drive, customFolder, targetFolderId);
+    } else if (process.env.AUTO_DATE_FOLDER === 'true') {
+        // Jika default folder tanggal aktif
+        const today = new Date().toISOString().split('T')[0];
         targetFolderId = await getOrCreateFolder(drive, today, targetFolderId);
     }
 
@@ -110,17 +113,15 @@ async function uploadFileStream({ filePath, fileName, mimeType }) {
         body: fs.createReadStream(filePath)
     };
 
-    // Resumable upload untuk file besar agar hemat RAM & tahan gangguan jaringan
     const response = await drive.files.create({
         requestBody: fileMetadata,
         media: media,
-        fields: 'id, name, webViewLink, webContentLink, size'
+        fields: 'id, name, webViewLink, webContentLink, size, parents'
     }, {
-        // Timeout 30 menit untuk file gigabyte
-        timeout: 1800000
+        timeout: 1800000 // 30 menit timeout
     });
 
-    // Buat file dapat dilihat/diakses (opsional: jika ingin public link atau view)
+    // Default: izinkan sharing via link
     try {
         await drive.permissions.create({
             fileId: response.data.id,
@@ -129,11 +130,12 @@ async function uploadFileStream({ filePath, fileName, mimeType }) {
                 type: 'anyone'
             }
         });
-    } catch (e) {
-        // Abaikan jika akun workspace melarang sharing public
-    }
+    } catch (e) {}
 
-    return response.data;
+    return {
+        ...response.data,
+        folderName: customFolder || (process.env.AUTO_DATE_FOLDER === 'true' ? new Date().toISOString().split('T')[0] : 'Root Drive')
+    };
 }
 
 /**
@@ -145,11 +147,87 @@ async function deleteFileFromDrive(fileId) {
     return true;
 }
 
+/**
+ * Mengambil informasi kapasitas / storage Google Drive
+ */
+async function getDriveQuota() {
+    const drive = await getDriveClient();
+    const res = await drive.about.get({
+        fields: 'storageQuota, user'
+    });
+    return res.data;
+}
+
+/**
+ * Mencari file di Google Drive berdasarkan nama/kata kunci
+ */
+async function searchDriveFiles(query, limit = 5) {
+    const drive = await getDriveClient();
+    const escaped = query.replace(/'/g, "\\'");
+    const res = await drive.files.list({
+        q: `name contains '${escaped}' and mimeType != 'application/vnd.google-apps.folder' and trashed = false`,
+        pageSize: limit,
+        fields: 'files(id, name, size, mimeType, webViewLink, modifiedTime)'
+    });
+    return res.data.files || [];
+}
+
+/**
+ * Mengunduh file dari Google Drive ke disk lokal
+ */
+async function downloadFileFromDrive(fileId, outputPath) {
+    const drive = await getDriveClient();
+    const meta = await drive.files.get({
+        fileId,
+        fields: 'id, name, mimeType, size'
+    });
+
+    const res = await drive.files.get(
+        { fileId, alt: 'media' },
+        { responseType: 'stream' }
+    );
+
+    const dest = fs.createWriteStream(outputPath);
+    await new Promise((resolve, reject) => {
+        res.data.pipe(dest);
+        dest.on('finish', resolve);
+        dest.on('error', reject);
+    });
+
+    return meta.data;
+}
+
+/**
+ * Mengatur hak akses publik atau privat
+ */
+async function setFilePermission(fileId, isPublic) {
+    const drive = await getDriveClient();
+    if (isPublic) {
+        await drive.permissions.create({
+            fileId,
+            requestBody: { role: 'reader', type: 'anyone' }
+        });
+        return true;
+    } else {
+        const perms = await drive.permissions.list({ fileId });
+        for (const p of perms.data.permissions || []) {
+            if (p.type === 'anyone') {
+                await drive.permissions.delete({ fileId, permissionId: p.id });
+            }
+        }
+        return false;
+    }
+}
+
 module.exports = {
     getOAuth2Client,
     getDriveClient,
     uploadFileStream,
     deleteFileFromDrive,
+    getDriveQuota,
+    searchDriveFiles,
+    downloadFileFromDrive,
+    setFilePermission,
     SCOPES,
     TOKEN_PATH,
     CREDENTIALS_PATH
