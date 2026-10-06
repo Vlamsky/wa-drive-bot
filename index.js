@@ -463,13 +463,30 @@ async function startBot() {
                         await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
 
                         const downloadPath = path.join(TEMP_DIR, `get_${Date.now()}_${targetFile.name}`);
-                        await downloadFileFromDrive(targetFile.id, downloadPath);
+                        const fileMeta = await downloadFileFromDrive(targetFile.id, downloadPath);
+
+                        let finalName = fileMeta.name || targetFile.name || 'file';
+                        let finalMime = fileMeta.mimeType || targetFile.mimeType;
+
+                        // Pastikan mimetype valid dan bukan generic octet-stream jika nama file memiliki ekstensi
+                        if (!finalMime || finalMime === 'application/octet-stream') {
+                            finalMime = mime.lookup(finalName) || 'application/octet-stream';
+                        }
+
+                        // Pastikan ekstensi nama file terpasang sesuai mimetype
+                        const currentExt = path.extname(finalName);
+                        if (!currentExt && finalMime && finalMime !== 'application/octet-stream') {
+                            const extFromMime = mime.extension(finalMime);
+                            if (extFromMime) finalName = `${finalName}.${extFromMime}`;
+                        } else if (currentExt) {
+                            finalMime = mime.lookup(currentExt) || finalMime;
+                        }
 
                         await sock.sendMessage(remoteJid, {
                             document: fs.readFileSync(downloadPath),
-                            fileName: targetFile.name,
-                            mimetype: targetFile.mimeType || 'application/octet-stream',
-                            caption: `📥 *File dari Google Drive:* ${targetFile.name}`
+                            fileName: finalName,
+                            mimetype: finalMime,
+                            caption: `📥 *File dari Google Drive:* ${finalName}`
                         }, { quoted: msg });
 
                         try { fs.unlinkSync(downloadPath); } catch (e) {}
@@ -673,7 +690,8 @@ async function startBot() {
                     size: formatBytes(uploadResult.size || stats.size),
                     time: timeStr,
                     link: directLink,
-                    folder: uploadResult.folderName
+                    folder: uploadResult.folderName,
+                    mimeType: mimetype || mime.lookup(uploadResult.name) || 'application/octet-stream'
                 });
 
                 // Kirim notifikasi hasil yang sangat rapi

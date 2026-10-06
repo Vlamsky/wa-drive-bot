@@ -173,19 +173,44 @@ async function searchDriveFiles(query, limit = 5) {
 }
 
 /**
- * Mengunduh file dari Google Drive ke disk lokal
+ * Mengunduh file dari Google Drive ke disk lokal dengan MIME type dan ekstensi asli
  */
 async function downloadFileFromDrive(fileId, outputPath) {
     const drive = await getDriveClient();
-    const meta = await drive.files.get({
+    const metaRes = await drive.files.get({
         fileId,
         fields: 'id, name, mimeType, size'
     });
+    const meta = metaRes.data;
 
-    const res = await drive.files.get(
-        { fileId, alt: 'media' },
-        { responseType: 'stream' }
-    );
+    let res;
+    let finalMime = meta.mimeType;
+
+    // Jika file dikonversi menjadi format Google Workspace (Docs/Slides/Sheets), ekspor ke format standar Microsoft Office
+    if (meta.mimeType === 'application/vnd.google-apps.presentation') {
+        finalMime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+        res = await drive.files.export(
+            { fileId, mimeType: finalMime },
+            { responseType: 'stream' }
+        );
+    } else if (meta.mimeType === 'application/vnd.google-apps.document') {
+        finalMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        res = await drive.files.export(
+            { fileId, mimeType: finalMime },
+            { responseType: 'stream' }
+        );
+    } else if (meta.mimeType === 'application/vnd.google-apps.spreadsheet') {
+        finalMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        res = await drive.files.export(
+            { fileId, mimeType: finalMime },
+            { responseType: 'stream' }
+        );
+    } else {
+        res = await drive.files.get(
+            { fileId, alt: 'media' },
+            { responseType: 'stream' }
+        );
+    }
 
     const dest = fs.createWriteStream(outputPath);
     await new Promise((resolve, reject) => {
@@ -194,7 +219,7 @@ async function downloadFileFromDrive(fileId, outputPath) {
         dest.on('error', reject);
     });
 
-    return meta.data;
+    return { ...meta, mimeType: finalMime };
 }
 
 /**
