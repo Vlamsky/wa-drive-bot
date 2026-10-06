@@ -551,6 +551,16 @@ async function startBot() {
 
                 const remoteJid = msg.key.remoteJid;
                 const isFromMe = msg.key.fromMe;
+
+                // Abaikan pesan keluar (ketika nomor bot dipakai chat/kirim file ke orang atau nomor lain)
+                // Bot hanya merespons pesan MASUK dari nomor lain, bukan pesan KELUAR dari nomor bot
+                const myBotNumber = sock.user?.id ? sock.user.id.split(':')[0].split('@')[0].replace(/[^0-9]/g, '') : '';
+                const targetNumber = remoteJid ? remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+
+                if (isFromMe && (!myBotNumber || targetNumber !== myBotNumber)) {
+                    continue;
+                }
+
                 const senderJid = msg.key.participant || remoteJid;
 
                 const senderClean = normalizePhone(resolveLidToPhone(senderJid) || senderJid);
