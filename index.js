@@ -785,14 +785,19 @@ async function startBot() {
                         : `*Riwayat Unggahan Anda* (${history.length} file)\n\n`;
 
                     history.forEach((item, index) => {
+                        let displayFolder = item.folder || '';
+                        if (displayFolder.includes('/')) {
+                            displayFolder = displayFolder.split('/').slice(1).join('/');
+                        }
                         listText += `${index + 1}. \`${item.name}\` (${item.size})\n`;
                         if (isCheckAll && (item.uploaderName || item.uploader)) {
-                            listText += `   Pengunggah: ${item.uploaderName ? `${item.uploaderName} (${item.uploader})` : item.uploader}\n`;
+                            listText += `   Oleh: ${item.uploaderName || item.uploader} • `;
+                        } else {
+                            listText += `   `;
                         }
-                        if (item.folder) listText += `   Folder: \`${item.folder}\` • ${item.time}\n`;
-                        listText += `   Link: ${item.link}\n\n`;
+                        listText += `${displayFolder ? `Folder: \`${displayFolder}\` • ` : ''}${item.time}\n\n`;
                     });
-                    listText += `_Ketik \`ambil 1\` untuk kirim ke WA, atau \`hapus 1\` untuk menghapus._`;
+                    listText += `_Aksi: \`ambil 1\`, \`hapus 1\`, \`hapus 1-3\`, atau \`link 1\`_`;
 
                     await sock.sendMessage(remoteJid, { text: listText.trim() }, { quoted: msg });
                     continue;
@@ -986,66 +991,114 @@ async function startBot() {
                 }
 
                 // ==========================================
-                // 7. FITUR HAPUS FILE
+                // 6B. FITUR AMBIL LINK FILE
+                // ==========================================
+                if (lowerText.match(/^(link|url)\s+(\d+)$/)) {
+                    const match = lowerText.match(/^(link|url)\s+(\d+)$/);
+                    const idx = parseInt(match[2], 10);
+                    const userHistory = getHistory(senderClean, 50);
+                    if (idx >= 1 && idx <= userHistory.length) {
+                        const target = userHistory[idx - 1];
+                        await sock.sendMessage(remoteJid, {
+                            text: `*Link File: \`${target.name}\`*\n\n${target.link}`
+                        }, { quoted: msg });
+                    } else {
+                        await sock.sendMessage(remoteJid, {
+                            text: `Nomor urut tidak valid. Ketik \`cek\` untuk melihat nomor file (1 - ${userHistory.length}).`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 7. FITUR HAPUS FILE (MENDUKUNG HAPUS BANYAK FILE SEKALIGUS)
                 // ==========================================
                 if (lowerText.startsWith('hapus') || lowerText.startsWith('del') || lowerText === 'batal') {
                     const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
                     const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
                     
-                    let targetItem = null;
+                    let targetItems = [];
                     const userHistory = getHistory(senderClean, 50);
 
                     if (lowerText === 'batal' || lowerText === 'hapus terakhir' || lowerText === 'del last') {
                         const lastList = getHistory(senderClean, 1);
-                        targetItem = lastList[0];
-                    } else if (lowerText.match(/^(hapus|del)\s+(\d+)$/)) {
-                        const match = lowerText.match(/^(hapus|del)\s+(\d+)$/);
-                        const index = parseInt(match[2], 10);
-                        if (index >= 1 && index <= userHistory.length) {
-                            targetItem = userHistory[index - 1];
-                        } else {
-                            await sock.sendMessage(remoteJid, {
-                                text: `⚠️ Nomor urut file tidak ditemukan. Ketik *cek* untuk melihat nomor file Anda (1 - ${userHistory.length}).`
-                            }, { quoted: msg });
-                            continue;
+                        if (lastList[0]) targetItems.push(lastList[0]);
+                    } else if (lowerText === 'hapus semua' || lowerText === 'hapus all' || lowerText === 'del all') {
+                        targetItems = [...userHistory];
+                    } else if (lowerText.match(/^(hapus|del)\s+(\d+)\s*-\s*(\d+)$/)) {
+                        // Rentang nomor: contoh hapus 1-5
+                        const match = lowerText.match(/^(hapus|del)\s+(\d+)\s*-\s*(\d+)$/);
+                        const start = parseInt(match[2], 10);
+                        const end = parseInt(match[3], 10);
+                        const min = Math.min(start, end);
+                        const max = Math.max(start, end);
+                        for (let i = min; i <= max; i++) {
+                            if (i >= 1 && i <= userHistory.length) {
+                                targetItems.push(userHistory[i - 1]);
+                            }
                         }
+                    } else if (lowerText.match(/^(hapus|del)\s+([\d\s,]+)$/)) {
+                        // Beberapa nomor: contoh hapus 1, 2, 3 atau hapus 1 2 3
+                        const match = lowerText.match(/^(hapus|del)\s+([\d\s,]+)$/);
+                        const rawNums = match[2].split(/[,\s]+/).filter(Boolean);
+                        const indices = [...new Set(rawNums.map(n => parseInt(n, 10)).filter(n => !isNaN(n)))];
+                        indices.forEach(idx => {
+                            if (idx >= 1 && idx <= userHistory.length) {
+                                targetItems.push(userHistory[idx - 1]);
+                            }
+                        });
                     } else if (quotedText) {
-                        targetItem = userHistory.find(h => 
+                        const found = userHistory.find(h => 
                             quotedText.includes(h.id) || 
                             (h.link && quotedText.includes(h.link)) || 
                             quotedText.includes(h.name)
                         );
-                    } else {
-                        await sock.sendMessage(remoteJid, {
-                            text: `💡 *Panduan Menghapus File:*\n\n` +
-                                  `• Ketik *hapus 1* ➔ Hapus file nomor 1 di daftar *cek* Anda\n` +
-                                  `• Ketik *hapus terakhir* ➔ Hapus file terakhir yang Anda upload\n` +
-                                  `• Atau *Swipe Reply* pesan file bot lalu ketik *hapus*`
-                        }, { quoted: msg });
-                        continue;
+                        if (found) targetItems.push(found);
                     }
 
-                    if (!targetItem) {
+                    if (targetItems.length === 0) {
                         await sock.sendMessage(remoteJid, {
-                            text: `⚠️ File tidak ditemukan dalam riwayat Anda. Anda hanya dapat menghapus file yang Anda unggah sendiri.`
+                            text: `*Panduan Menghapus File*\n\n` +
+                                  `• \`hapus 1\` ➔ hapus file no 1 di daftar \`cek\`\n` +
+                                  `• \`hapus 1, 2, 3\` ➔ hapus beberapa file sekaligus\n` +
+                                  `• \`hapus 1-5\` ➔ hapus rentang file 1 sampai 5\n` +
+                                  `• \`hapus terakhir\` ➔ hapus file paling baru\n` +
+                                  `• \`hapus semua\` ➔ hapus seluruh riwayat Anda`
                         }, { quoted: msg });
                         continue;
                     }
 
                     try {
                         await sock.sendMessage(remoteJid, { react: { text: '🗑️', key: msg.key } });
-                        await deleteFileFromDrive(targetItem.id);
-                        deleteFromHistory(targetItem.id, senderClean);
 
-                        await sock.sendMessage(remoteJid, {
-                            text: `🗑️ *File Berhasil Dihapus!*\n\n` +
-                                  `📄 *Nama File:* ${targetItem.name}\n` +
-                                  `📦 *Ukuran:* ${targetItem.size}\n\n` +
-                                  `✨ _File telah dihapus secara permanen dari Google Drive._`
-                        }, { quoted: msg });
+                        let deletedNames = [];
+                        for (const item of targetItems) {
+                            try {
+                                await deleteFileFromDrive(item.id);
+                                deleteFromHistory(item.id, senderClean);
+                                deletedNames.push(item.name);
+                            } catch (e) {
+                                console.error(`Gagal menghapus file ${item.name}:`, e.message);
+                            }
+                        }
+
+                        if (deletedNames.length === 1) {
+                            await sock.sendMessage(remoteJid, {
+                                text: `*File Berhasil Dihapus*\n\n` +
+                                      `• Nama: \`${deletedNames[0]}\`\n` +
+                                      `• Status: Dihapus permanen dari Google Drive`
+                            }, { quoted: msg });
+                        } else {
+                            let resMsg = `*${deletedNames.length} File Berhasil Dihapus*\n\n`;
+                            deletedNames.forEach((n, i) => {
+                                resMsg += `${i + 1}. \`${n}\`\n`;
+                            });
+                            resMsg += `\n_Semua file di atas telah dihapus dari Google Drive._`;
+                            await sock.sendMessage(remoteJid, { text: resMsg.trim() }, { quoted: msg });
+                        }
                     } catch (err) {
                         await sock.sendMessage(remoteJid, {
-                            text: `❌ *Gagal Menghapus File:* ${err.message}`
+                            text: `Gagal menghapus file: ${err.message}`
                         }, { quoted: msg });
                     }
                     continue;
