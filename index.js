@@ -1,9 +1,9 @@
 const fs = require('fs');
 const path = require('path');
-const { 
-    makeWASocket, 
-    useMultiFileAuthState, 
-    DisconnectReason, 
+const {
+    makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
     downloadContentFromMessage,
     fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
@@ -13,12 +13,12 @@ const mime = require('mime-types');
 const archiver = require('archiver');
 require('dotenv').config();
 
-const { 
-    uploadFileStream, 
-    deleteFileFromDrive, 
-    getDriveQuota, 
-    searchDriveFiles, 
-    downloadFileFromDrive, 
+const {
+    uploadFileStream,
+    deleteFileFromDrive,
+    getDriveQuota,
+    searchDriveFiles,
+    downloadFileFromDrive,
     setFilePermission,
     getUserFolderInfo,
     renameFileInDrive,
@@ -44,7 +44,7 @@ function getFolderSessions() {
         if (fs.existsSync(FOLDER_SESSIONS_FILE)) {
             return JSON.parse(fs.readFileSync(FOLDER_SESSIONS_FILE, 'utf8'));
         }
-    } catch (e) {}
+    } catch (e) { }
     return {};
 }
 
@@ -110,7 +110,7 @@ function getSmartCategory(fileName, mimetype = '') {
     const ext = path.extname(fileName || '').toLowerCase().replace('.', '');
     const mimeStr = (mimetype || '').toLowerCase();
 
-    if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'odt', 'rtf'].includes(ext) || 
+    if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'odt', 'rtf'].includes(ext) ||
         mimeStr.includes('pdf') || mimeStr.includes('word') || mimeStr.includes('sheet') || mimeStr.includes('presentation') || mimeStr.includes('document')) {
         return 'Dokumen';
     }
@@ -161,7 +161,7 @@ function scheduleBatchDigest(sock, remoteJid, uploadItem) {
             if (items.length === 1) {
                 // Tampilan 1 File (Minimalis & Elegan)
                 const file = items[0];
-                let msg = 
+                let msg =
                     `*File Berhasil Diunggah*\n\n` +
                     `• Nama: \`${file.name}\`\n` +
                     `• Ukuran: ${file.size}\n` +
@@ -177,7 +177,7 @@ function scheduleBatchDigest(sock, remoteJid, uploadItem) {
                 const totalBytes = items.reduce((acc, it) => acc + (it.bytes || 0), 0);
                 const totalFormatted = totalBytes > 0 ? formatBytes(totalBytes) : `${items.length} Berkas`;
 
-                let msg = 
+                let msg =
                     `*Upload Selesai (${items.length} File)*\n` +
                     `Folder: \`${folder}\` • Total: ${totalFormatted}\n\n`;
 
@@ -226,8 +226,8 @@ function deleteFromHistory(fileId, userPhone = null) {
     try {
         if (fs.existsSync(HISTORY_FILE)) {
             let history = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-            const item = history.find(h => 
-                h.id === fileId && 
+            const item = history.find(h =>
+                h.id === fileId &&
                 (!userPhone || userPhone === 'ALL' || !h.uploader || h.uploader === userPhone || h.uploader.endsWith(userPhone) || userPhone.endsWith(h.uploader))
             );
             if (!item) return null;
@@ -235,7 +235,7 @@ function deleteFromHistory(fileId, userPhone = null) {
             fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
             return item;
         }
-    } catch (e) {}
+    } catch (e) { }
     return null;
 }
 
@@ -253,7 +253,7 @@ function updateHistoryFileName(fileId, newName) {
                 return item;
             }
         }
-    } catch (e) {}
+    } catch (e) { }
     return null;
 }
 
@@ -265,16 +265,16 @@ function getHistory(userPhone = null, limit = 10) {
         if (fs.existsSync(HISTORY_FILE)) {
             let list = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
             if (userPhone && userPhone !== 'ALL') {
-                list = list.filter(item => 
-                    !item.uploader || 
-                    item.uploader === userPhone || 
-                    item.uploader.endsWith(userPhone) || 
+                list = list.filter(item =>
+                    !item.uploader ||
+                    item.uploader === userPhone ||
+                    item.uploader.endsWith(userPhone) ||
                     userPhone.endsWith(item.uploader)
                 );
             }
             return list.slice(0, limit);
         }
-    } catch (e) {}
+    } catch (e) { }
     return [];
 }
 
@@ -298,7 +298,7 @@ function resolveLidToPhone(rawJid) {
                 }
             }
         }
-    } catch (e) {}
+    } catch (e) { }
 
     return null;
 }
@@ -385,7 +385,7 @@ function isOwner(remoteJid, isFromMe, participant) {
         .map(n => normalizePhone(n))
         .filter(Boolean);
 
-    return adminList.some(admin => 
+    return adminList.some(admin =>
         candidates.some(cand => cand === admin || cand.endsWith(admin) || admin.endsWith(cand))
     );
 }
@@ -408,7 +408,7 @@ function isSenderAllowed(jid, fromMe, participant) {
 
     const candidates = [jidClean, partClean, resolvedPhoneJid, resolvedPhonePart].filter(Boolean);
 
-    return allowedList.some(num => 
+    return allowedList.some(num =>
         candidates.some(cand => cand === num || cand.endsWith(num) || num.endsWith(cand))
     );
 }
@@ -419,10 +419,10 @@ function isSenderAllowed(jid, fromMe, participant) {
 function extractMediaContent(message) {
     if (!message) return null;
 
-    const unwrapMsg = message.viewOnceMessage?.message || 
-                     message.viewOnceMessageV2?.message || 
-                     message.documentWithCaptionMessage?.message || 
-                     message;
+    const unwrapMsg = message.viewOnceMessage?.message ||
+        message.viewOnceMessageV2?.message ||
+        message.documentWithCaptionMessage?.message ||
+        message;
 
     let caption = '';
 
@@ -525,7 +525,7 @@ async function startBot() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect = 
+            const shouldReconnect =
                 (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) {
                 console.log('🔄 Menghubungkan kembali...');
@@ -554,8 +554,8 @@ async function startBot() {
                     console.log(`🚫 Panggilan dari ${call.from} otomatis ditolak.`);
                     await sock.sendMessage(call.from, {
                         text: `🚫 *Panggilan Ditolak Otomatis*\n\n` +
-                              `Nomor ini adalah *Bot WhatsApp Otomatis* dan tidak dapat menerima panggilan suara atau video call.\n\n` +
-                              `Silakan kirim pesan teks atau dokumen untuk dilayani oleh bot. Ketik *menu* untuk melihat panduan.`
+                            `Nomor ini adalah *Bot WhatsApp Otomatis* dan tidak dapat menerima panggilan suara atau video call.\n\n` +
+                            `Silakan kirim pesan teks atau dokumen untuk dilayani oleh bot. Ketik *menu* untuk melihat panduan.`
                     });
                 } catch (e) {
                     console.error('Gagal menolak panggilan:', e.message);
@@ -604,8 +604,8 @@ async function startBot() {
                 }
 
                 const textBody = (
-                    msg.message.conversation || 
-                    msg.message.extendedTextMessage?.text || 
+                    msg.message.conversation ||
+                    msg.message.extendedTextMessage?.text ||
                     ''
                 ).trim();
                 const lowerText = textBody.toLowerCase();
@@ -614,7 +614,7 @@ async function startBot() {
                 // 1. FITUR MENU / HELP
                 // ==========================================
                 if (lowerText === 'menu' || lowerText === 'help' || lowerText === 'bantuan') {
-                    const menuText = 
+                    const menuText =
                         `*Google Drive Bot*\n` +
                         `Upload file otomatis dengan resolusi asli.\n\n` +
                         `*Upload & Folder*\n` +
@@ -660,9 +660,9 @@ async function startBot() {
                         numUsage = Number(usage || 0);
                         percent = numLimit > 0 ? Math.round((numUsage / numLimit) * 100) : 0;
                         progressBar = makeProgressBar(percent);
-                    } catch (e) {}
+                    } catch (e) { }
 
-                    const profileMsg = 
+                    const profileMsg =
                         `*Profil Pengguna*\n\n` +
                         `• Nomor: \`${senderClean}\`\n` +
                         `• Akses: ${userIsOwner ? 'Owner / Admin' : 'Terdaftar'}\n` +
@@ -685,7 +685,7 @@ async function startBot() {
                         const sessionFolder = getUserFolderSession(senderClean);
                         const folderInfo = await getUserFolderInfo(userFolderName, sessionFolder);
 
-                        const folderMsg = 
+                        const folderMsg =
                             `*Folder Google Drive Anda*\n\n` +
                             `📁 *${folderInfo.folderName}*\n` +
                             `🔗 ${folderInfo.folderLink}\n\n` +
@@ -712,20 +712,20 @@ async function startBot() {
                             if (current) {
                                 await sock.sendMessage(remoteJid, {
                                     text: `*Folder Sesi Aktif: \`${current}\`*\n\n` +
-                                          `• Folder Induk: \`${folderInfo.folderName}\`\n` +
-                                          `🔗 ${folderInfo.folderLink}\n\n` +
-                                          `Semua file yang Anda kirim atau teruskan akan otomatis masuk ke folder ini.\n\n` +
-                                          `• \`folder reset\` ➔ kembali ke mode otomatis\n` +
-                                          `• \`folder <nama>\` ➔ ganti nama folder`
+                                        `• Folder Induk: \`${folderInfo.folderName}\`\n` +
+                                        `🔗 ${folderInfo.folderLink}\n\n` +
+                                        `Semua file yang Anda kirim atau teruskan akan otomatis masuk ke folder ini.\n\n` +
+                                        `• \`folder reset\` ➔ kembali ke mode otomatis\n` +
+                                        `• \`folder <nama>\` ➔ ganti nama folder`
                                 }, { quoted: msg });
                             } else {
                                 await sock.sendMessage(remoteJid, {
                                     text: `*Folder Google Drive Anda*\n\n` +
-                                          `📁 *${folderInfo.folderName}*\n` +
-                                          `🔗 ${folderInfo.folderLink}\n\n` +
-                                          `Status: Mode Otomatis (dibagi per kategori foto, dokumen, video).\n\n` +
-                                          `_Untuk forward banyak file ke satu folder, ketik:_\n` +
-                                          `\`folder <nama>\` (contoh: \`folder Liburan\`)`
+                                        `📁 *${folderInfo.folderName}*\n` +
+                                        `🔗 ${folderInfo.folderLink}\n\n` +
+                                        `Status: Mode Otomatis (dibagi per kategori foto, dokumen, video).\n\n` +
+                                        `_Untuk forward banyak file ke satu folder, ketik:_\n` +
+                                        `\`folder <nama>\` (contoh: \`folder Liburan\`)`
                                 }, { quoted: msg });
                             }
                         } catch (e) {
@@ -738,8 +738,8 @@ async function startBot() {
                         const prev = clearUserFolderSession(senderClean);
                         await sock.sendMessage(remoteJid, {
                             text: `*Folder Sesi Dinonaktifkan*\n` +
-                                  (prev ? `Folder sebelumnya: \`${prev}\`\n` : '') +
-                                  `Penyimpanan file kembali ke mode otomatis.`
+                                (prev ? `Folder sebelumnya: \`${prev}\`\n` : '') +
+                                `Penyimpanan file kembali ke mode otomatis.`
                         }, { quoted: msg });
                         continue;
                     }
@@ -755,8 +755,8 @@ async function startBot() {
                     setUserFolderSession(senderClean, cleanFolderName);
                     await sock.sendMessage(remoteJid, {
                         text: `*Folder Sesi Diatur: \`${cleanFolderName}\`*\n\n` +
-                              `Silakan kirim atau teruskan (forward) file sekarang. Semua file akan masuk ke folder ini.\n\n` +
-                              `_Ketik \`folder reset\` bila sudah selesai._`
+                            `Silakan kirim atau teruskan (forward) file sekarang. Semua file akan masuk ke folder ini.\n\n` +
+                            `_Ketik \`folder reset\` bila sudah selesai._`
                     }, { quoted: msg });
                     continue;
                 }
@@ -890,7 +890,7 @@ async function startBot() {
 
                     let listText = catFilter
                         ? `*Riwayat ${catTitle} Anda* (${history.length} file)\n\n`
-                        : (isCheckAll 
+                        : (isCheckAll
                             ? `*Semua Unggahan Bot (Admin)* (${history.length} file)\n\n`
                             : `*Riwayat Unggahan Anda* (${history.length} file)\n\n`);
 
@@ -899,8 +899,8 @@ async function startBot() {
                         if (displayFolder.includes('/')) {
                             displayFolder = displayFolder.split('/').slice(1).join('/');
                         }
-                        const previewLink = item.id 
-                            ? `https://drive.google.com/open?id=${item.id}` 
+                        const previewLink = item.id
+                            ? `https://drive.google.com/open?id=${item.id}`
                             : (item.link || '');
 
                         listText += `${index + 1}. *${item.name}* (${item.size})\n`;
@@ -943,7 +943,7 @@ async function startBot() {
                         const percent = numLimit > 0 ? Math.round((numUsage / numLimit) * 100) : 0;
                         const progressBar = makeProgressBar(percent);
 
-                        const quotaMsg = 
+                        const quotaMsg =
                             `*Kapasitas Google Drive*\n\n` +
                             `• Terpakai: ${formatBytes(numUsage)} dari ${numLimit > 0 ? formatBytes(numLimit) : 'Tak Terbatas'} (${percent}%)\n` +
                             `• Tersedia: ${numLimit > 0 ? formatBytes(numLimit - numUsage) : 'Tak Terbatas'}\n` +
@@ -1043,9 +1043,9 @@ async function startBot() {
                         const qFull = `${quotedText} ${qCaption} ${qFileName}`.trim();
 
                         if (qFull) {
-                            targetFile = userHistory.find(h => 
-                                (h.id && qFull.includes(h.id)) || 
-                                (h.link && qFull.includes(h.link)) || 
+                            targetFile = userHistory.find(h =>
+                                (h.id && qFull.includes(h.id)) ||
+                                (h.link && qFull.includes(h.link)) ||
                                 (h.name && qFull.includes(h.name))
                             );
                         }
@@ -1088,7 +1088,7 @@ async function startBot() {
                             caption: `📥 *File dari Google Drive:* ${finalName}`
                         }, { quoted: msg });
 
-                        try { fs.unlinkSync(downloadPath); } catch (e) {}
+                        try { fs.unlinkSync(downloadPath); } catch (e) { }
                         await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
                     } catch (err) {
                         await sock.sendMessage(remoteJid, {
@@ -1129,9 +1129,9 @@ async function startBot() {
 
                         if (qFull && customNewName) {
                             newNameInput = customNewName;
-                            targetFile = userHistory.find(h => 
-                                (h.id && qFull.includes(h.id)) || 
-                                (h.link && qFull.includes(h.link)) || 
+                            targetFile = userHistory.find(h =>
+                                (h.id && qFull.includes(h.id)) ||
+                                (h.link && qFull.includes(h.link)) ||
                                 (h.name && qFull.includes(h.name))
                             );
                         }
@@ -1140,8 +1140,8 @@ async function startBot() {
                     if (!targetFile || !newNameInput) {
                         await sock.sendMessage(remoteJid, {
                             text: `*Panduan Ganti Nama File*\n\n` +
-                                  `• Dengan nomor: \`rename 1 Dokumen Penting.pdf\`\n` +
-                                  `• Dengan balas pesan: Swipe/Balas pesan upload dari bot lalu ketik \`rename Nama Baru\``
+                                `• Dengan nomor: \`rename 1 Dokumen Penting.pdf\`\n` +
+                                `• Dengan balas pesan: Swipe/Balas pesan upload dari bot lalu ketik \`rename Nama Baru\``
                         }, { quoted: msg });
                         continue;
                     }
@@ -1162,9 +1162,9 @@ async function startBot() {
                         await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
                         await sock.sendMessage(remoteJid, {
                             text: `*Nama File Berhasil Diubah*\n\n` +
-                                  `• Semula: \`${oldName}\`\n` +
-                                  `• Menjadi: \`${newNameInput}\`\n\n` +
-                                  `🔗 https://drive.google.com/open?id=${targetFile.id}`
+                                `• Semula: \`${oldName}\`\n` +
+                                `• Menjadi: \`${newNameInput}\`\n\n` +
+                                `🔗 https://drive.google.com/open?id=${targetFile.id}`
                         }, { quoted: msg });
                     } catch (err) {
                         await sock.sendMessage(remoteJid, {
@@ -1223,7 +1223,7 @@ async function startBot() {
                                 if (base && base.includes('.')) {
                                     fileName = decodeURIComponent(base);
                                 }
-                            } catch (e) {}
+                            } catch (e) { }
                         }
 
                         const contentType = response.headers.get('content-type') || 'application/octet-stream';
@@ -1269,7 +1269,7 @@ async function startBot() {
                             userFolder: userFolderName
                         });
 
-                        try { fs.unlinkSync(tempFilePath); } catch (e) {}
+                        try { fs.unlinkSync(tempFilePath); } catch (e) { }
 
                         const now = new Date();
                         const timeStr = now.toLocaleDateString('id-ID', {
@@ -1292,7 +1292,7 @@ async function startBot() {
 
                         await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
 
-                        const successMsg = 
+                        const successMsg =
                             `*Upload dari Link Berhasil!*\n\n` +
                             `• Nama: \`${uploadResult.name}\`\n` +
                             `• Ukuran: ${formatBytes(uploadResult.size || stats.size)}\n` +
@@ -1310,9 +1310,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 5D. FITUR DOWNLOAD FOLDER MENJADI ZIP (ZIP <FOLDER>)
-                // ==========================================
                 if (lowerText.startsWith('zip ') || lowerText === 'zip' || lowerText.startsWith('download folder')) {
                     let folderQuery = textBody.replace(/^(zip|download folder)\s*/i, '').trim();
                     const sessionFolder = getUserFolderSession(senderClean);
@@ -1324,8 +1321,8 @@ async function startBot() {
                     if (!folderQuery) {
                         await sock.sendMessage(remoteJid, {
                             text: `*Panduan Unduh Folder ZIP*\n\n` +
-                                  `Ketik: \`zip <nama folder>\` (contoh: \`zip Liburan\` atau \`zip Dokumen\`)\n\n` +
-                                  `_Bot akan mengompres seluruh file di folder tersebut menjadi 1 berkas ZIP lalu mengirimkannya ke WhatsApp._`
+                                `Ketik: \`zip <nama folder>\` (contoh: \`zip Liburan\` atau \`zip Dokumen\`)\n\n` +
+                                `_Bot akan mengompres seluruh file di folder tersebut menjadi 1 berkas ZIP lalu mengirimkannya ke WhatsApp._`
                         }, { quoted: msg });
                         continue;
                     }
@@ -1333,7 +1330,6 @@ async function startBot() {
                     try {
                         await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
 
-                        // 1. Ambil folderId dari Google Drive
                         const folderInfo = await getUserFolderInfo(userFolderName, folderQuery);
                         if (!folderInfo || !folderInfo.folderId) {
                             throw new Error(`Folder "${folderQuery}" tidak ditemukan di Google Drive Anda.`);
@@ -1381,10 +1377,22 @@ async function startBot() {
                         await archivePromise;
 
                         downloadedTempPaths.forEach(p => {
-                            try { fs.unlinkSync(p); } catch (e) {}
+                            try { fs.unlinkSync(p); } catch (e) { }
                         });
 
                         const zipStats = fs.statSync(zipFilePath);
+
+                        if (zipStats.size > 95 * 1024 * 1024) {
+                            try { fs.unlinkSync(zipFilePath); } catch (e) { }
+                            await sock.sendMessage(remoteJid, { react: { text: '⚠️', key: msg.key } });
+                            await sock.sendMessage(remoteJid, {
+                                text: `⚠️ *Ukuran ZIP Melebihi Batas WhatsApp*\n\n` +
+                                      `Total ukuran ZIP adalah *${formatBytes(zipStats.size)}* (batas maksimal dokumen WhatsApp adalah 100 MB).\n\n` +
+                                      `Silakan unduh atau lihat berkas langsung melalui Google Drive:\n` +
+                                      `🔗 ${folderInfo.folderLink}`
+                            }, { quoted: msg });
+                            continue;
+                        }
 
                         // Kirim file ZIP ke WhatsApp
                         await sock.sendMessage(remoteJid, {
@@ -1394,7 +1402,7 @@ async function startBot() {
                             caption: `📦 *Folder ZIP: ${folderQuery}*\n• Total: ${filesInFolder.length} file • ${formatBytes(zipStats.size)}`
                         }, { quoted: msg });
 
-                        try { fs.unlinkSync(zipFilePath); } catch (e) {}
+                        try { fs.unlinkSync(zipFilePath); } catch (e) { }
                         await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
 
                     } catch (err) {
@@ -1410,9 +1418,9 @@ async function startBot() {
                 // ==========================================
                 // 6. FITUR PERMISSION (PUBLIK / PRIVAT)
                 // ==========================================
-                if (lowerText.startsWith('publik') || lowerText.startsWith('public') || 
+                if (lowerText.startsWith('publik') || lowerText.startsWith('public') ||
                     lowerText.startsWith('privat') || lowerText.startsWith('private')) {
-                    
+
                     const isPublic = lowerText.startsWith('publik') || lowerText.startsWith('public');
                     const matchNum = lowerText.match(/^(publik|public|privat|private)\s+(\d+)$/);
 
@@ -1435,7 +1443,7 @@ async function startBot() {
 
                     try {
                         await setFilePermission(targetItem.id, isPublic);
-                        const statusDesc = isPublic 
+                        const statusDesc = isPublic
                             ? `🌐 *Akses Diubah Menjadi PUBLIK*\nSiapa saja yang memiliki link sekarang dapat melihat & mendownload file *${targetItem.name}*.`
                             : `🔒 *Akses Diubah Menjadi PRIVAT*\nAkses file *${targetItem.name}* telah dikunci kembali hanya untuk akun Google Anda.`;
 
@@ -1474,7 +1482,7 @@ async function startBot() {
                 if (lowerText.startsWith('hapus') || lowerText.startsWith('del') || lowerText === 'batal') {
                     const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
                     const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
-                    
+
                     let targetItems = [];
                     const userHistory = getHistory(senderClean, 50);
 
@@ -1511,9 +1519,9 @@ async function startBot() {
                         const qFull = `${quotedText} ${qCaption} ${qFileName}`.trim();
 
                         if (qFull) {
-                            const found = userHistory.find(h => 
-                                (h.id && qFull.includes(h.id)) || 
-                                (h.link && qFull.includes(h.link)) || 
+                            const found = userHistory.find(h =>
+                                (h.id && qFull.includes(h.id)) ||
+                                (h.link && qFull.includes(h.link)) ||
                                 (h.name && qFull.includes(h.name))
                             );
                             if (found) targetItems.push(found);
@@ -1523,11 +1531,11 @@ async function startBot() {
                     if (targetItems.length === 0) {
                         await sock.sendMessage(remoteJid, {
                             text: `*Panduan Menghapus File*\n\n` +
-                                  `• \`hapus 1\` ➔ hapus file no 1 di daftar \`cek\`\n` +
-                                  `• \`hapus 1, 2, 3\` ➔ hapus beberapa file sekaligus\n` +
-                                  `• \`hapus 1-5\` ➔ hapus rentang file 1 sampai 5\n` +
-                                  `• \`hapus terakhir\` ➔ hapus file paling baru\n` +
-                                  `• \`hapus semua\` ➔ hapus seluruh riwayat Anda`
+                                `• \`hapus 1\` ➔ hapus file no 1 di daftar \`cek\`\n` +
+                                `• \`hapus 1, 2, 3\` ➔ hapus beberapa file sekaligus\n` +
+                                `• \`hapus 1-5\` ➔ hapus rentang file 1 sampai 5\n` +
+                                `• \`hapus terakhir\` ➔ hapus file paling baru\n` +
+                                `• \`hapus semua\` ➔ hapus seluruh riwayat Anda`
                         }, { quoted: msg });
                         continue;
                     }
@@ -1549,8 +1557,8 @@ async function startBot() {
                         if (deletedNames.length === 1) {
                             await sock.sendMessage(remoteJid, {
                                 text: `*File Berhasil Dihapus*\n\n` +
-                                      `• Nama: \`${deletedNames[0]}\`\n` +
-                                      `• Status: Dihapus permanen dari Google Drive`
+                                    `• Nama: \`${deletedNames[0]}\`\n` +
+                                    `• Status: Dihapus permanen dari Google Drive`
                             }, { quoted: msg });
                         } else {
                             let resMsg = `*${deletedNames.length} File Berhasil Dihapus*\n\n`;
@@ -1574,7 +1582,7 @@ async function startBot() {
                 const mediaInfo = extractMediaContent(msg.message);
                 if (!mediaInfo) {
                     if (textBody && !isFromMe) {
-                        const greetingMsg = 
+                        const greetingMsg =
                             `*Google Drive Bot*\n\n` +
                             `Kirim file apa pun (dokumen, foto, video) untuk diunggah otomatis dalam resolusi asli tanpa kompresi.\n\n` +
                             `• Ketik \`menu\` untuk panduan fitur\n` +
@@ -1629,7 +1637,7 @@ async function startBot() {
                 // Reaksi ⏳ saat download dimulai
                 try {
                     await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
-                } catch (e) {}
+                } catch (e) { }
 
                 const tempFileName = `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
                 const tempFilePath = path.join(TEMP_DIR, tempFileName);
@@ -1640,7 +1648,7 @@ async function startBot() {
                 // Reaksi ☁️ saat upload ke Drive dimulai
                 try {
                     await sock.sendMessage(remoteJid, { react: { text: '☁️', key: msg.key } });
-                } catch (e) {}
+                } catch (e) { }
 
                 // Upload ke Google Drive dengan dukungan folder per user dan subfolder
                 const uploadResult = await uploadFileStream({
@@ -1653,12 +1661,12 @@ async function startBot() {
 
                 console.log(`✅ Sukses upload ke Google Drive: ${uploadResult.name} (Folder: ${uploadResult.folderName})`);
 
-                try { fs.unlinkSync(tempFilePath); } catch (e) {}
+                try { fs.unlinkSync(tempFilePath); } catch (e) { }
 
                 // Reaksi ✅ saat selesai
                 try {
                     await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
-                } catch (e) {}
+                } catch (e) { }
 
                 const now = new Date();
                 const timeStr = now.toLocaleDateString('id-ID', {
@@ -1699,7 +1707,7 @@ async function startBot() {
                     await sock.sendMessage(msg.key.remoteJid, {
                         text: `❌ *Gagal Mengunggah ke Google Drive:*\n\n${err.message}`
                     }, { quoted: msg });
-                } catch (e) {}
+                } catch (e) { }
             }
         }
     });
