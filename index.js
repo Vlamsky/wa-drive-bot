@@ -281,8 +281,30 @@ async function startBot() {
             console.log('==================================================');
             console.log('✅ BOT WHATSAPP GOOGLE DRIVE PREMIUM SUDAH AKTIF!');
             console.log('==================================================');
-            console.log('💡 Semua 6 fitur premium siap digunakan.');
+            console.log('💡 Semua fitur premium & auto-responder aktif.');
+            console.log('🚫 Fitur anti-call (tolak otomatis panggilan) aktif.');
             console.log('--------------------------------------------------\n');
+        }
+    });
+
+    // ==========================================
+    // AUTO REJECT CALL (Tolak Telepon & Video Call Otomatis)
+    // ==========================================
+    sock.ev.on('call', async (calls) => {
+        for (const call of calls) {
+            if (call.status === 'offer') {
+                try {
+                    await sock.rejectCall(call.id, call.from);
+                    console.log(`🚫 Panggilan dari ${call.from} otomatis ditolak.`);
+                    await sock.sendMessage(call.from, {
+                        text: `🚫 *Panggilan Ditolak Otomatis*\n\n` +
+                              `Nomor ini adalah *Bot WhatsApp Otomatis* dan tidak dapat menerima panggilan suara atau video call.\n\n` +
+                              `Silakan kirim pesan teks atau dokumen untuk dilayani oleh bot. Ketik *menu* untuk melihat panduan.`
+                    });
+                } catch (e) {
+                    console.error('Gagal menolak panggilan:', e.message);
+                }
+            }
         }
     });
 
@@ -297,7 +319,15 @@ async function startBot() {
                 const isFromMe = msg.key.fromMe;
                 const senderJid = msg.key.participant || remoteJid;
 
-                if (!isSenderAllowed(remoteJid, isFromMe, msg.key.participant)) continue;
+                // Jika nomor tidak diizinkan, beri tahu nomor tersebut
+                if (!isSenderAllowed(remoteJid, isFromMe, msg.key.participant)) {
+                    if (!remoteJid.endsWith('@g.us') && !isFromMe) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `⛔ *Akses Ditolak*\n\nNomor Anda belum terdaftar di sistem bot ini.\nHubungi pemilik untuk menambahkan nomor Anda ke daftar izin (*whitelist*).`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
 
                 const textBody = (
                     msg.message.conversation || 
@@ -606,10 +636,25 @@ async function startBot() {
                 }
 
                 // ==========================================
-                // 8. PROSES UNGGAH FILE MEDIA (DOKUMEN / FOTO / VIDEO)
+                // 8. AUTO-RESPONDER (Untuk Chat Teks Biasa / Sapaan)
                 // ==========================================
                 const mediaInfo = extractMediaContent(msg.message);
-                if (!mediaInfo) continue;
+                if (!mediaInfo) {
+                    if (textBody && !isFromMe) {
+                        const greetingMsg = 
+                            `🤖 *Halo! Saya adalah Bot WhatsApp Google Drive.* ☁️\n\n` +
+                            `Kirim file dokumen, foto, atau video langsung ke chat ini untuk otomatis diunggah ke Google Drive dengan resolusi asli tanpa kompresi.\n\n` +
+                            `📌 *Perintah Cepat:*\n` +
+                            `• Ketik *menu* ➔ Melihat semua fitur lengkap\n` +
+                            `• Ketik *kuota* ➔ Cek kapasitas penyimpanan Drive\n` +
+                            `• Ketik *cek* ➔ Melihat riwayat unggahan\n` +
+                            `• Ketik *cari <nama>* ➔ Mencari file di Drive\n` +
+                            `• Kirim file + caption *#kuliah* ➔ Masuk ke folder Kuliah`;
+
+                        await sock.sendMessage(remoteJid, { text: greetingMsg }, { quoted: msg });
+                    }
+                    continue;
+                }
 
                 let { type: mediaType, payload, fileName, mimetype, fileLength, caption } = mediaInfo;
 
