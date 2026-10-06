@@ -141,7 +141,9 @@ async function uploadFileStream({ filePath, fileName, mimeType, customFolder = n
 
     return {
         ...response.data,
-        folderName: displayFolder
+        folderName: displayFolder,
+        folderId: targetFolderId,
+        folderLink: targetFolderId ? `https://drive.google.com/drive/folders/${targetFolderId}` : null
     };
 }
 

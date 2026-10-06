@@ -100,6 +100,116 @@ function makeProgressBar(percent) {
 }
 
 /**
+ * Deteksi kategori cerdas berdasarkan ekstensi dan mime type
+ */
+function getSmartCategory(fileName, mimetype = '') {
+    const ext = path.extname(fileName || '').toLowerCase().replace('.', '');
+    const mimeStr = (mimetype || '').toLowerCase();
+
+    if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'odt', 'rtf'].includes(ext) || 
+        mimeStr.includes('pdf') || mimeStr.includes('word') || mimeStr.includes('sheet') || mimeStr.includes('presentation') || mimeStr.includes('document')) {
+        return 'Dokumen';
+    }
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'bmp', 'svg', 'tiff'].includes(ext) || mimeStr.startsWith('image/')) {
+        return 'Foto_Gambar';
+    }
+    if (['mp4', 'mkv', 'mov', 'avi', 'flv', '3gp', 'wmv'].includes(ext) || mimeStr.startsWith('video/')) {
+        return 'Video';
+    }
+    if (['mp3', 'm4a', 'wav', 'aac', 'opus', 'ogg', 'flac'].includes(ext) || mimeStr.startsWith('audio/')) {
+        return 'Audio';
+    }
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2'].includes(ext) || mimeStr.includes('zip') || mimeStr.includes('compressed')) {
+        return 'Arsip';
+    }
+    return 'Lainnya';
+}
+
+// Antrean batch upload untuk notifikasi rapi (Smart Batch Digest - Anti-Spam)
+const batchUploadQueue = new Map();
+
+function scheduleBatchDigest(sock, remoteJid, uploadItem) {
+    let queue = batchUploadQueue.get(remoteJid);
+    if (!queue) {
+        queue = { timer: null, items: [], folderName: uploadItem.folder, folderLink: uploadItem.folderLink };
+        batchUploadQueue.set(remoteJid, queue);
+    }
+
+    queue.items.push(uploadItem);
+    if (uploadItem.folder) queue.folderName = uploadItem.folder;
+    if (uploadItem.folderLink) queue.folderLink = uploadItem.folderLink;
+
+    if (queue.timer) {
+        clearTimeout(queue.timer);
+    }
+
+    // Debounce 3.5 detik: tunggu sampai batch pengiriman forward selesai
+    queue.timer = setTimeout(async () => {
+        try {
+            const currentQueue = batchUploadQueue.get(remoteJid);
+            if (!currentQueue || currentQueue.items.length === 0) return;
+
+            const items = [...currentQueue.items];
+            const folder = currentQueue.folderName || 'Root Drive';
+            const folderLink = currentQueue.folderLink;
+            batchUploadQueue.delete(remoteJid);
+
+            if (items.length === 1) {
+                // Tampilan 1 File (Sleek Minimalist Card)
+                const file = items[0];
+                let msg = 
+                    `╭── ☁️ DRIVE CLOUD [SYNCED] ──\n` +
+                    `│ 📄 \`${file.name}\`\n` +
+                    `│ 📦 Ukuran: ${file.size}\n` +
+                    `│ 📁 Folder: \`${folder}\`\n` +
+                    `│ 🕒 ${file.time}\n` +
+                    `├─ 🔗 AKSES CEPAT ────────────\n` +
+                    `│ 📄 File: ${file.link}\n`;
+                if (folderLink) {
+                    msg += `│ 📂 Folder: ${folderLink}\n`;
+                }
+                msg += 
+                    `╰────────────────────────────\n` +
+                    `💡 _Ketik *menu* untuk opsi lain atau *ambil 1* untuk kirim ke WA._`;
+
+                await sock.sendMessage(remoteJid, { text: msg });
+            } else {
+                // Tampilan Banyak File / Forward Massal (Batch Digest Card)
+                const totalBytes = items.reduce((acc, it) => acc + (it.bytes || 0), 0);
+                const totalFormatted = totalBytes > 0 ? formatBytes(totalBytes) : `${items.length} Berkas`;
+
+                let msg = 
+                    `╭── 📦 BATCH SYNC COMPLETED ──\n` +
+                    `│ ✨ Berhasil upload \`${items.length} file\` sekaligus\n` +
+                    `│ 📁 Folder: \`${folder}\`\n` +
+                    `│ 💾 Total Size: \`${totalFormatted}\`\n` +
+                    `├─ 📋 DAFTAR FILE TERUNGGAH ──\n`;
+
+                items.slice(0, 15).forEach((item, idx) => {
+                    msg += `│ ${idx + 1}. \`${item.name}\` (${item.size})\n`;
+                });
+
+                if (items.length > 15) {
+                    msg += `│ ... dan ${items.length - 15} file lainnya.\n`;
+                }
+
+                if (folderLink) {
+                    msg += `├─ 📂 BUKA FOLDER LENGKAP ────\n│ ${folderLink}\n`;
+                }
+                msg += 
+                    `╰────────────────────────────\n` +
+                    `💡 _Ketik *cek* untuk melihat nomor riwayat atau *ambil <no>*._`;
+
+                await sock.sendMessage(remoteJid, { text: msg });
+            }
+        } catch (e) {
+            console.error('Error sending batch digest:', e);
+        }
+    }, 3500);
+}
+
+
+/**
  * Menyimpan riwayat file yang berhasil di-upload
  */
 function saveToHistory(entry) {
@@ -481,30 +591,71 @@ async function startBot() {
                 // ==========================================
                 if (lowerText === 'menu' || lowerText === 'help' || lowerText === 'bantuan') {
                     const menuText = 
-                        `✨ *MENU ASISTEN GOOGLE DRIVE* ✨\n\n` +
-                        `📁 *1. Upload File Otomatis:*\n` +
-                        `• Kirim file dokumen/foto/video langsung ke chat ini.\n` +
-                        `• Tag folder: tambahkan *#kuliah*, *#kerjaan*, dll pada caption.\n` +
-                        `• Rename file: tulis nama baru di caption saat kirim file.\n\n` +
-                        `📂 *2. Mode Folder Massal (Untuk Forward Banyak File):*\n` +
-                        `• *folder <nama>* ➔ Set folder aktif sebelum forward banyak file\n` +
-                        `• *folder status* ➔ Cek folder aktif saat ini\n` +
-                        `• *folder reset* ➔ Nonaktifkan mode folder\n\n` +
-                        `📋 *3. Perintah Pengguna:*\n` +
-                        `• *cek* ➔ Melihat 15 riwayat unggahan Anda\n` +
-                        `• *cari <kata kunci>* ➔ Mencari file di Google Drive\n` +
-                        `• *kuota* ➔ Cek kapasitas Google Drive Anda\n` +
-                        `• *ambil <nomor>* ➔ Kirim file Drive ke WhatsApp\n` +
-                        `• *hapus <nomor>* ➔ Hapus file dari Google Drive\n` +
-                        `• *hapus terakhir* ➔ Batalkan upload file terakhir\n` +
-                        `• *publik <nomor>* ➔ Buka akses file (Anyone with link)\n` +
-                        `• *privat <nomor>* ➔ Kunci akses file kembali privat\n\n` +
-                        `👑 *4. Perintah Admin (Whitelist):*\n` +
-                        `• *+user <nomor>* ➔ Tambah izin user baru\n` +
-                        `• *-user <nomor>* ➔ Hapus izin user\n` +
-                        `• *listuser* ➔ Cek daftar nomor yang diizinkan`;
+                        `╭── ⚡ GOOGLE DRIVE BOT v2.5 ──\n` +
+                        `│ _Cloud Assistant WhatsApp Berkecepatan Tinggi_\n` +
+                        `├─ 📥 UPLOAD & FORWARD ────────\n` +
+                        `│ • Kirim file langsung ➔ Auto-upload resolusi asli\n` +
+                        `│ • Caption \`#nama\` ➔ Masuk folder tertentu\n` +
+                        `│ • Tanpa caption ➔ Otomatis masuk kategori cerdas\n` +
+                        `├─ 📂 FOLDER MASSAL (FORWARD) ─\n` +
+                        `│ • \`folder <nama>\` ➔ Set folder aktif sebelum forward\n` +
+                        `│ • \`folder status\` ➔ Cek folder aktif saat ini\n` +
+                        `│ • \`folder reset\`  ➔ Kembali ke mode otomatis\n` +
+                        `├─ 📋 PERINTAH FILE ──────────\n` +
+                        `│ • \`cek\`           ➔ 15 file riwayat Anda\n` +
+                        `│ • \`status\` / \`.me\` ➔ Profil & statistik Anda\n` +
+                        `│ • \`cari <kata>\`   ➔ Cari file di arsip Anda\n` +
+                        `│ • \`kuota\`         ➔ Cek kapasitas penyimpanan\n` +
+                        `│ • \`ambil <no>\`    ➔ Kirim file ke WhatsApp\n` +
+                        `│ • \`hapus <no>\`    ➔ Hapus file dari Drive\n` +
+                        `│ • \`hapus terakhir\`➔ Hapus file paling baru\n` +
+                        `│ • \`publik <no>\`   ➔ Buka link untuk umum\n` +
+                        `│ • \`privat <no>\`   ➔ Kunci file kembali\n` +
+                        `├─ 👑 ADMIN WHITELIST ────────\n` +
+                        `│ • \`+user <no>\`    ➔ Tambah nomor izin\n` +
+                        `│ • \`-user <no>\`    ➔ Hapus izin nomor\n` +
+                        `│ • \`listuser\`      ➔ Cek semua nomor terdaftar\n` +
+                        `╰────────────────────────────`;
 
                     await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
+                    continue;
+                }
+
+                // ==========================================
+                // 1A. FITUR MINI DASHBOARD PERSONAL (.me / status / profil)
+                // ==========================================
+                if (lowerText === '.me' || lowerText === 'me' || lowerText === 'status' || lowerText === 'profil' || lowerText === 'profile') {
+                    const myHistory = getHistory(senderClean, 50);
+                    const totalFiles = myHistory.length;
+                    const sessionFolder = getUserFolderSession(senderClean) || 'Default (Auto-Category)';
+
+                    let progressBar = '[████░░░░░░]';
+                    let percent = 0;
+                    let numLimit = 0;
+                    let numUsage = 0;
+                    try {
+                        const quotaData = await getDriveQuota();
+                        const { limit, usage } = quotaData.storageQuota;
+                        numLimit = Number(limit || 0);
+                        numUsage = Number(usage || 0);
+                        percent = numLimit > 0 ? Math.round((numUsage / numLimit) * 100) : 0;
+                        progressBar = makeProgressBar(percent);
+                    } catch (e) {}
+
+                    const profileMsg = 
+                        `╭── 👤 PROFIL CLOUD ANDA ─────\n` +
+                        `│ 📱 Nomor: \`${senderClean}\`\n` +
+                        `│ 🛡️ Status: \`${userIsOwner ? 'OWNER / ADMIN' : 'WHITELIST VERIFIED'}\`\n` +
+                        `│ 📂 Folder Sesi: \`${sessionFolder}\`\n` +
+                        `├─ 📊 STATISTIK PENGGUNA ─────\n` +
+                        `│ 📄 Total File Anda: \`${totalFiles} File\`\n` +
+                        `├─ ☁️ STATUS STORAGE BOT ─────\n` +
+                        `│ Status: ${progressBar} *${percent}%*\n` +
+                        `│ 💾 Terpakai: ${formatBytes(numUsage)} / ${numLimit > 0 ? formatBytes(numLimit) : 'Tak Terbatas'}\n` +
+                        `╰────────────────────────────\n` +
+                        `💡 _Ketik *menu* untuk opsi lain atau *cek* untuk daftar file._`;
+
+                    await sock.sendMessage(remoteJid, { text: profileMsg }, { quoted: msg });
                     continue;
                 }
 
@@ -570,7 +721,7 @@ async function startBot() {
                 }
 
                 // ==========================================
-                // 1B. FITUR MANAJEMEN WHITELIST (+user / -user / listuser)
+                // 1C. FITUR MANAJEMEN WHITELIST (+user / -user / listuser)
                 // ==========================================
                 if (lowerText.startsWith('+user') || lowerText.startsWith('tambah user')) {
                     if (!isOwner(remoteJid, isFromMe, msg.key.participant)) {
@@ -658,25 +809,25 @@ async function startBot() {
                     }
 
                     let listText = isCheckAll 
-                        ? `📋 *SEMUA UNGGAHAN BOT (ADMIN VIEW - ${history.length}):*\n\n`
-                        : `📋 *DAFTAR UNGGAHAN ANDA (${history.length}):*\n\n`;
+                        ? `╭── 📋 SEMUA UNGGAHAN BOT (ADMIN) ──\n│ Total: \`${history.length} file\`\n├────────────────────────────\n`
+                        : `╭── 📋 DAFTAR UNGGAHAN ANDA ─\n│ Menampilkan \`${history.length} file\` terbaru\n├────────────────────────────\n`;
 
                     history.forEach((item, index) => {
-                        listText += `*${index + 1}.* 📄 *${item.name}* (${item.size})\n`;
+                        listText += `│ *${index + 1}.* 📄 \`${item.name}\` (${item.size})\n`;
                         if (isCheckAll && (item.uploaderName || item.uploader)) {
-                            listText += `   👤 Oleh: *${item.uploaderName ? `${item.uploaderName} (${item.uploader})` : item.uploader}*\n`;
+                            listText += `│    👤 Oleh: *${item.uploaderName ? `${item.uploaderName} (${item.uploader})` : item.uploader}*\n`;
                         }
-                        if (item.folder) listText += `   📁 Folder: *${item.folder}*\n`;
-                        listText += `   🕒 ${item.time}\n`;
-                        listText += `   🔗 ${item.link}\n\n`;
+                        if (item.folder) listText += `│    📁 \`${item.folder}\` • 🕒 ${item.time}\n`;
+                        listText += `│    🔗 ${item.link}\n│\n`;
                     });
-                    listText += `💡 *Aksi Cepat:*\n`;
-                    listText += `• Ketik *ambil 1* untuk download ke WA\n`;
-                    listText += `• Ketik *hapus 1* untuk menghapus file\n`;
-                    listText += `• Ketik *publik 1* / *privat 1* untuk ubah akses`;
+                    listText += `├─ 💡 AKSI CEPAT ────────────\n`;
+                    listText += `│ • \`ambil <no>\`  ➔ Unduh ke WhatsApp\n`;
+                    listText += `│ • \`hapus <no>\`  ➔ Hapus file dari Drive\n`;
+                    listText += `│ • \`publik <no>\` ➔ Buka akses file link\n`;
                     if (userIsOwner && !isCheckAll) {
-                        listText += `\n\n👑 _(Admin) Ketik *cek all* untuk melihat unggahan semua user._`;
+                        listText += `│ • \`cek all\`     ➔ Lihat unggahan semua user\n`;
                     }
+                    listText += `╰────────────────────────────`;
 
                     await sock.sendMessage(remoteJid, { text: listText }, { quoted: msg });
                     continue;
@@ -696,12 +847,14 @@ async function startBot() {
                         const progressBar = makeProgressBar(percent);
 
                         const quotaMsg = 
-                            `📊 *STATUS KAPASITAS GOOGLE DRIVE*\n\n` +
-                            `Status: ${progressBar} *${percent}%*\n` +
-                            `💾 *Terpakai:* ${formatBytes(numUsage)}\n` +
-                            `📦 *Total Kuota:* ${numLimit > 0 ? formatBytes(numLimit) : 'Tak Terbatas'}\n` +
-                            `🆓 *Sisa Tersedia:* ${numLimit > 0 ? formatBytes(numLimit - numUsage) : 'Tak Terbatas'}\n\n` +
-                            `✨ _Data akurat langsung dari Google Drive API._`;
+                            `╭── 📊 STORAGE GOOGLE DRIVE ─\n` +
+                            `│ Status: ${progressBar} *${percent}%*\n` +
+                            `├────────────────────────────\n` +
+                            `│ 💾 Terpakai : \`${formatBytes(numUsage)}\`\n` +
+                            `│ 📦 Total    : \`${numLimit > 0 ? formatBytes(numLimit) : 'Tak Terbatas'}\`\n` +
+                            `│ 🆓 Tersedia : \`${numLimit > 0 ? formatBytes(numLimit - numUsage) : 'Tak Terbatas'}\`\n` +
+                            `╰────────────────────────────\n` +
+                            `✨ _Data akurat tersinkronisasi via Google Drive API._`;
 
                         await sock.sendMessage(remoteJid, { text: quotaMsg }, { quoted: msg });
                     } catch (err) {
@@ -743,13 +896,13 @@ async function startBot() {
                             continue;
                         }
 
-                        let searchMsg = `🔍 *HASIL PENCARIAN FILE ANDA*\nKata kunci: _"${query}"_\n\n`;
+                        let searchMsg = `╭── 🔍 HASIL PENCARIAN ─────\n│ Kata kunci: _"${query}"_\n├────────────────────────────\n`;
                         results.forEach((file, index) => {
-                            searchMsg += `*${index + 1}.* 📄 *${file.name}* (${file.size || 'N/A'})\n`;
-                            if (file.folder) searchMsg += `   📁 Folder: *${file.folder}*\n`;
-                            searchMsg += `   🔗 ${file.link || file.webViewLink}\n\n`;
+                            searchMsg += `│ *${index + 1}.* 📄 \`${file.name}\` (${file.size || 'N/A'})\n`;
+                            if (file.folder) searchMsg += `│    📁 \`${file.folder}\`\n`;
+                            searchMsg += `│    🔗 ${file.link || file.webViewLink}\n│\n`;
                         });
-                        searchMsg += `💡 Ketik *ambil [nama file]* untuk mengunduh ke WA.`;
+                        searchMsg += `╰────────────────────────────\n💡 Ketik *ambil [nama file]* untuk mengunduh ke WA.`;
 
                         await sock.sendMessage(remoteJid, { text: searchMsg }, { quoted: msg });
                     } catch (err) {
@@ -960,7 +1113,7 @@ async function startBot() {
 
                 let { type: mediaType, payload, fileName, mimetype, fileLength, caption } = mediaInfo;
 
-                // FITUR 1: DETEKSI CUSTOM FOLDER DARI TAG CAPTION (#hashtag) ATAU FOLDER SESI
+                // FITUR 1: DETEKSI CUSTOM FOLDER (HASHTAG -> FOLDER SESI -> SMART AUTO-CATEGORY)
                 let customFolder = null;
                 const folderMatch = caption.match(/#([a-zA-Z0-9_-]+)/);
                 if (folderMatch) {
@@ -969,6 +1122,9 @@ async function startBot() {
                     const sessionFolder = getUserFolderSession(senderClean);
                     if (sessionFolder) {
                         customFolder = sessionFolder;
+                    } else {
+                        // Smart Auto-Category otomatis jika user tidak menentukan folder
+                        customFolder = getSmartCategory(fileName, mimetype);
                     }
                 }
 
@@ -1048,17 +1204,18 @@ async function startBot() {
                     uploaderName: senderDisplayName
                 });
 
-                // Kirim notifikasi hasil yang sangat rapi
-                const successMessage = 
-                    `✅ *Berhasil Diunggah ke Google Drive!*\n\n` +
-                    `📄 *Nama File:* ${uploadResult.name}\n` +
-                    `📁 *Folder:* ${uploadResult.folderName}\n` +
-                    `📦 *Ukuran:* ${formatBytes(uploadResult.size || stats.size)}\n` +
-                    `🔗 *Link Google Drive:*\n${directLink}\n\n` +
-                    `✨ _File tersimpan dalam resolusi asli tanpa kompresi._\n` +
-                    `💡 _Ketik *menu* untuk melihat fitur lainnya._`;
-
-                await sock.sendMessage(remoteJid, { text: successMessage }, { quoted: msg });
+                // Kirim notifikasi via Smart Batch Digest (Anti-Spam & Rapi)
+                scheduleBatchDigest(sock, remoteJid, {
+                    id: uploadResult.id,
+                    name: uploadResult.name,
+                    size: formatBytes(uploadResult.size || stats.size),
+                    bytes: uploadResult.size || stats.size,
+                    time: timeStr,
+                    link: directLink,
+                    folder: uploadResult.folderName,
+                    folderLink: uploadResult.folderLink,
+                    uploader: senderClean
+                });
 
             } catch (err) {
                 console.error('❌ Terjadi kesalahan saat memproses file:', err);
