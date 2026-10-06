@@ -1,0 +1,8 @@
+node_modules/
+.env
+credentials.json
+token.json
+session_auth/
+temp_downloads/
+wa-drive-bot.zip
+*.log
