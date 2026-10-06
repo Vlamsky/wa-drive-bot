@@ -8,3 +8,4 @@ wa-drive-bot.zip
 *.log
 upload_history.json
 whitelist.json
+folder_sessions.json

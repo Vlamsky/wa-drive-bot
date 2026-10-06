@@ -26,10 +26,55 @@ const AUTH_DIR = path.join(__dirname, 'session_auth');
 const TEMP_DIR = path.join(__dirname, 'temp_downloads');
 const HISTORY_FILE = path.join(__dirname, 'upload_history.json');
 const WHITELIST_FILE = path.join(__dirname, 'whitelist.json');
+const FOLDER_SESSIONS_FILE = path.join(__dirname, 'folder_sessions.json');
 
 if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
+
+/**
+ * Mengambil mapping folder sesi per pengguna
+ */
+function getFolderSessions() {
+    try {
+        if (fs.existsSync(FOLDER_SESSIONS_FILE)) {
+            return JSON.parse(fs.readFileSync(FOLDER_SESSIONS_FILE, 'utf8'));
+        }
+    } catch (e) {}
+    return {};
+}
+
+/**
+ * Mengambil nama folder sesi aktif milik user
+ */
+function getUserFolderSession(phone) {
+    if (!phone) return null;
+    const sessions = getFolderSessions();
+    return sessions[phone] || null;
+}
+
+/**
+ * Menyetel folder sesi aktif untuk user
+ */
+function setUserFolderSession(phone, folderName) {
+    if (!phone) return;
+    const sessions = getFolderSessions();
+    sessions[phone] = folderName;
+    fs.writeFileSync(FOLDER_SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+}
+
+/**
+ * Menghapus folder sesi aktif user (kembali ke tanggal harian)
+ */
+function clearUserFolderSession(phone) {
+    if (!phone) return null;
+    const sessions = getFolderSessions();
+    const prev = sessions[phone];
+    delete sessions[phone];
+    fs.writeFileSync(FOLDER_SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+    return prev;
+}
+
 
 /**
  * Format bytes menjadi ukuran yang mudah dibaca (KB, MB, GB, TB)
@@ -441,8 +486,12 @@ async function startBot() {
                         `• Kirim file dokumen/foto/video langsung ke chat ini.\n` +
                         `• Tag folder: tambahkan *#kuliah*, *#kerjaan*, dll pada caption.\n` +
                         `• Rename file: tulis nama baru di caption saat kirim file.\n\n` +
-                        `📋 *2. Perintah Pengguna:*\n` +
-                        `• *cek* ➔ Melihat 10 riwayat unggahan terbaru\n` +
+                        `📂 *2. Mode Folder Massal (Untuk Forward Banyak File):*\n` +
+                        `• *folder <nama>* ➔ Set folder aktif sebelum forward banyak file\n` +
+                        `• *folder status* ➔ Cek folder aktif saat ini\n` +
+                        `• *folder reset* ➔ Nonaktifkan mode folder\n\n` +
+                        `📋 *3. Perintah Pengguna:*\n` +
+                        `• *cek* ➔ Melihat 15 riwayat unggahan Anda\n` +
                         `• *cari <kata kunci>* ➔ Mencari file di Google Drive\n` +
                         `• *kuota* ➔ Cek kapasitas Google Drive Anda\n` +
                         `• *ambil <nomor>* ➔ Kirim file Drive ke WhatsApp\n` +
@@ -450,12 +499,73 @@ async function startBot() {
                         `• *hapus terakhir* ➔ Batalkan upload file terakhir\n` +
                         `• *publik <nomor>* ➔ Buka akses file (Anyone with link)\n` +
                         `• *privat <nomor>* ➔ Kunci akses file kembali privat\n\n` +
-                        `👑 *3. Perintah Admin (Whitelist):*\n` +
+                        `👑 *4. Perintah Admin (Whitelist):*\n` +
                         `• *+user <nomor>* ➔ Tambah izin user baru\n` +
                         `• *-user <nomor>* ➔ Hapus izin user\n` +
                         `• *listuser* ➔ Cek daftar nomor yang diizinkan`;
 
                     await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
+                    continue;
+                }
+
+                // ==========================================
+                // 1B. FITUR SET FOLDER SESI (UNTUK FORWARD BANYAK FILE SEKALIGUS)
+                // ==========================================
+                if (lowerText.startsWith('folder') || lowerText.startsWith('set folder')) {
+                    const arg = textBody.replace(/^(set\s+)?folder\s*/i, '').trim();
+                    const lowerArg = arg.toLowerCase();
+
+                    if (!arg || lowerArg === 'status' || lowerArg === 'cek') {
+                        const current = getUserFolderSession(senderClean);
+                        if (current) {
+                            await sock.sendMessage(remoteJid, {
+                                text: `📁 *Folder Sesi Aktif:*\n📂 *${current}*\n\n` +
+                                      `Semua file yang Anda kirim atau teruskan (forward) saat ini akan otomatis masuk ke folder ini tanpa perlu caption #hashtag!\n\n` +
+                                      `💡 *Perintah Terkait:*\n` +
+                                      `• Ketik *folder reset* ➔ Kembali ke folder tanggal harian\n` +
+                                      `• Ketik *folder <nama baru>* ➔ Ganti nama folder`
+                            }, { quoted: msg });
+                        } else {
+                            await sock.sendMessage(remoteJid, {
+                                text: `📁 *Mode Folder Sesi Saat Ini: NONAKTIF*\n` +
+                                      `File otomatis masuk ke folder tanggal harian.\n\n` +
+                                      `💡 *Cara Mudah Teruskan (Forward) Banyak File:* \n` +
+                                      `1. Ketik: *folder NamaFolder* (contoh: *folder Berkas_Lomba*)\n` +
+                                      `2. Teruskan / forward puluhan file sekaligus dari chat lain ke bot ini.\n` +
+                                      `3. Semua file otomatis masuk ke folder *Berkas_Lomba*!\n` +
+                                      `4. Ketik *folder reset* bila sudah selesai.`
+                            }, { quoted: msg });
+                        }
+                        continue;
+                    }
+
+                    if (lowerArg === 'reset' || lowerArg === 'off' || lowerArg === 'hapus' || lowerArg === 'normal' || lowerArg === 'batal') {
+                        const prev = clearUserFolderSession(senderClean);
+                        await sock.sendMessage(remoteJid, {
+                            text: `🔄 *Folder Sesi Dinonaktifkan!*\n\n` +
+                                  (prev ? `Folder sebelumnya (*${prev}*) telah dinonaktifkan.\n` : '') +
+                                  `File yang Anda kirim sekarang akan kembali masuk ke folder tanggal harian.`
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    // Set folder baru
+                    const cleanFolderName = arg.replace(/[^a-zA-Z0-9_\-\s]/g, '').trim().replace(/\s+/g, '_');
+                    if (!cleanFolderName) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `⚠️ Nama folder tidak valid. Contoh: *folder Dokumen_Rapat*`
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    setUserFolderSession(senderClean, cleanFolderName);
+                    await sock.sendMessage(remoteJid, {
+                        text: `📁 *Folder Sesi Berhasil Disetel!* 🎯\n\n` +
+                              `📂 Target: *${cleanFolderName}*\n\n` +
+                              `✨ *Silakan teruskan (forward) atau kirim file Anda sekarang!*\n` +
+                              `Semua file yang Anda kirim akan otomatis tersimpan rapi di dalam folder *${cleanFolderName}*.\n\n` +
+                              `💡 Ketik *folder reset* jika sudah selesai mengunggah.`
+                    }, { quoted: msg });
                     continue;
                 }
 
@@ -850,11 +960,16 @@ async function startBot() {
 
                 let { type: mediaType, payload, fileName, mimetype, fileLength, caption } = mediaInfo;
 
-                // FITUR 1: DETEKSI CUSTOM FOLDER DARI TAG CAPTION (misal #kuliah, #kerjaan)
+                // FITUR 1: DETEKSI CUSTOM FOLDER DARI TAG CAPTION (#hashtag) ATAU FOLDER SESI
                 let customFolder = null;
                 const folderMatch = caption.match(/#([a-zA-Z0-9_-]+)/);
                 if (folderMatch) {
                     customFolder = folderMatch[1];
+                } else {
+                    const sessionFolder = getUserFolderSession(senderClean);
+                    if (sessionFolder) {
+                        customFolder = sessionFolder;
+                    }
                 }
 
                 // FITUR 2: AUTO RENAME FILE DARI CAPTION
