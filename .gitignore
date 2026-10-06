@@ -6,3 +6,5 @@ session_auth/
 temp_downloads/
 wa-drive-bot.zip
 *.log
+upload_history.json
+whitelist.json

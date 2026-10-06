@@ -72,13 +72,17 @@ function saveToHistory(entry) {
 }
 
 /**
- * Menghapus file tertentu dari riwayat lokal
+ * Menghapus file tertentu dari riwayat lokal (Hanya jika milik user tersebut atau Owner)
  */
-function deleteFromHistory(fileId) {
+function deleteFromHistory(fileId, userPhone = null) {
     try {
         if (fs.existsSync(HISTORY_FILE)) {
             let history = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-            const item = history.find(h => h.id === fileId);
+            const item = history.find(h => 
+                h.id === fileId && 
+                (!userPhone || userPhone === 'ALL' || !h.uploader || h.uploader === userPhone || h.uploader.endsWith(userPhone) || userPhone.endsWith(h.uploader))
+            );
+            if (!item) return null;
             history = history.filter(h => h.id !== fileId);
             fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
             return item;
@@ -88,12 +92,20 @@ function deleteFromHistory(fileId) {
 }
 
 /**
- * Mengambil riwayat unggahan
+ * Mengambil riwayat unggahan (Khusus untuk user tertentu agar tidak bercampur)
  */
-function getHistory(limit = 10) {
+function getHistory(userPhone = null, limit = 10) {
     try {
         if (fs.existsSync(HISTORY_FILE)) {
-            const list = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+            let list = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+            if (userPhone && userPhone !== 'ALL') {
+                list = list.filter(item => 
+                    !item.uploader || 
+                    item.uploader === userPhone || 
+                    item.uploader.endsWith(userPhone) || 
+                    userPhone.endsWith(item.uploader)
+                );
+            }
             return list.slice(0, limit);
         }
     } catch (e) {}
@@ -397,6 +409,11 @@ async function startBot() {
                 const isFromMe = msg.key.fromMe;
                 const senderJid = msg.key.participant || remoteJid;
 
+                const senderClean = normalizePhone(resolveLidToPhone(senderJid) || senderJid);
+                const senderDisplayName = (msg.pushName || '').replace(/[^a-zA-Z0-9_-]/g, '').trim();
+                const userFolderName = senderDisplayName ? `${senderDisplayName}_${senderClean}` : `User_${senderClean}`;
+                const userIsOwner = isOwner(remoteJid, isFromMe, msg.key.participant);
+
                 // Jika nomor tidak diizinkan, beri tahu nomor tersebut
                 if (!isSenderAllowed(remoteJid, isFromMe, msg.key.participant)) {
                     if (!remoteJid.endsWith('@g.us') && !isFromMe) {
@@ -517,18 +534,28 @@ async function startBot() {
                 // ==========================================
                 // 2. FITUR CEK RIWAYAT
                 // ==========================================
-                if (lowerText === 'cek' || lowerText === 'daftar' || lowerText === 'list' || lowerText === 'riwayat') {
-                    const history = getHistory(10);
+                if (lowerText === 'cek' || lowerText === 'daftar' || lowerText === 'list' || lowerText === 'riwayat' || (userIsOwner && (lowerText === 'cek all' || lowerText === 'list all'))) {
+                    const isCheckAll = userIsOwner && (lowerText === 'cek all' || lowerText === 'list all');
+                    const targetUploader = isCheckAll ? 'ALL' : senderClean;
+                    const history = getHistory(targetUploader, 15);
                     if (history.length === 0) {
                         await sock.sendMessage(remoteJid, {
-                            text: '📭 *Belum Ada Riwayat Unggahan*\nAnda belum mengunggah file apa pun ke Google Drive via bot ini.'
+                            text: isCheckAll 
+                                ? '📭 *Belum Ada Riwayat Unggahan di Bot Ini*'
+                                : '📭 *Belum Ada Riwayat Unggahan*\nAnda belum mengunggah file apa pun ke Google Drive via bot ini.'
                         }, { quoted: msg });
                         continue;
                     }
 
-                    let listText = `📋 *DAFTAR UNGGAHAN TERBARU (${history.length}):*\n\n`;
+                    let listText = isCheckAll 
+                        ? `📋 *SEMUA UNGGAHAN BOT (ADMIN VIEW - ${history.length}):*\n\n`
+                        : `📋 *DAFTAR UNGGAHAN ANDA (${history.length}):*\n\n`;
+
                     history.forEach((item, index) => {
                         listText += `*${index + 1}.* 📄 *${item.name}* (${item.size})\n`;
+                        if (isCheckAll && (item.uploaderName || item.uploader)) {
+                            listText += `   👤 Oleh: *${item.uploaderName ? `${item.uploaderName} (${item.uploader})` : item.uploader}*\n`;
+                        }
                         if (item.folder) listText += `   📁 Folder: *${item.folder}*\n`;
                         listText += `   🕒 ${item.time}\n`;
                         listText += `   🔗 ${item.link}\n\n`;
@@ -537,6 +564,9 @@ async function startBot() {
                     listText += `• Ketik *ambil 1* untuk download ke WA\n`;
                     listText += `• Ketik *hapus 1* untuk menghapus file\n`;
                     listText += `• Ketik *publik 1* / *privat 1* untuk ubah akses`;
+                    if (userIsOwner && !isCheckAll) {
+                        listText += `\n\n👑 _(Admin) Ketik *cek all* untuk melihat unggahan semua user._`;
+                    }
 
                     await sock.sendMessage(remoteJid, { text: listText }, { quoted: msg });
                     continue;
@@ -549,7 +579,6 @@ async function startBot() {
                     try {
                         const quotaData = await getDriveQuota();
                         const { limit, usage } = quotaData.storageQuota;
-                        const user = quotaData.user;
 
                         const numLimit = Number(limit || 0);
                         const numUsage = Number(usage || 0);
@@ -586,20 +615,31 @@ async function startBot() {
                     }
 
                     try {
-                        const results = await searchDriveFiles(query, 5);
+                        let results = [];
+                        if (userIsOwner && query.includes('--all')) {
+                            // Admin bisa cari global di Google Drive dengan --all
+                            const cleanQ = query.replace('--all', '').trim();
+                            results = await searchDriveFiles(cleanQ, 5);
+                        } else {
+                            // Pengguna hanya mencari di antara file miliknya sendiri
+                            const myHistory = getHistory(senderClean, 50);
+                            results = myHistory.filter(f => f.name.toLowerCase().includes(query.toLowerCase()));
+                        }
+
                         if (results.length === 0) {
                             await sock.sendMessage(remoteJid, {
-                                text: `🔍 *Tidak Ditemukan*\nTidak ada file di Google Drive dengan kata kunci "${query}".`
+                                text: `🔍 *Tidak Ditemukan*\nTidak ada file milik Anda dengan kata kunci "${query}".`
                             }, { quoted: msg });
                             continue;
                         }
 
-                        let searchMsg = `🔍 *HASIL PENCARIAN GOOGLE DRIVE*\nKata kunci: _"${query}"_\n\n`;
+                        let searchMsg = `🔍 *HASIL PENCARIAN FILE ANDA*\nKata kunci: _"${query}"_\n\n`;
                         results.forEach((file, index) => {
-                            searchMsg += `*${index + 1}.* 📄 *${file.name}* (${formatBytes(file.size || 0)})\n`;
-                            searchMsg += `   🔗 ${file.webViewLink}\n\n`;
+                            searchMsg += `*${index + 1}.* 📄 *${file.name}* (${file.size || 'N/A'})\n`;
+                            if (file.folder) searchMsg += `   📁 Folder: *${file.folder}*\n`;
+                            searchMsg += `   🔗 ${file.link || file.webViewLink}\n\n`;
                         });
-                        searchMsg += `💡 Ketik *ambil [nama/link]* untuk meminta bot mengirim file ke WA.`;
+                        searchMsg += `💡 Ketik *ambil [nama file]* untuk mengunduh ke WA.`;
 
                         await sock.sendMessage(remoteJid, { text: searchMsg }, { quoted: msg });
                     } catch (err) {
@@ -617,27 +657,25 @@ async function startBot() {
                     const matchNum = lowerText.match(/^(ambil|download|get)\s+(\d+)$/);
                     let targetFile = null;
 
+                    const userHistory = getHistory(senderClean, 50);
+
                     if (matchNum) {
                         const index = parseInt(matchNum[2], 10);
-                        const history = getHistory(50);
-                        if (index >= 1 && index <= history.length) {
-                            targetFile = history[index - 1];
+                        if (index >= 1 && index <= userHistory.length) {
+                            targetFile = userHistory[index - 1];
                         }
                     }
 
                     if (!targetFile) {
                         const query = textBody.replace(/^(ambil|download|get)\s+/i, '').trim();
                         if (query) {
-                            const searchRes = await searchDriveFiles(query, 1);
-                            if (searchRes.length > 0) {
-                                targetFile = searchRes[0];
-                            }
+                            targetFile = userHistory.find(h => h.name.toLowerCase().includes(query.toLowerCase()));
                         }
                     }
 
                     if (!targetFile) {
                         await sock.sendMessage(remoteJid, {
-                            text: `⚠️ File tidak ditemukan. Ketik *cek* untuk melihat nomor urut (contoh: *ambil 1*) atau ketik *cari <nama file>*.`
+                            text: `⚠️ File tidak ditemukan dalam riwayat unggahan Anda.\nKetik *cek* untuk melihat nomor file Anda (contoh: *ambil 1*) atau ketik *cari <nama file>*.`
                         }, { quoted: msg });
                         continue;
                     }
@@ -692,17 +730,18 @@ async function startBot() {
                     const matchNum = lowerText.match(/^(publik|public|privat|private)\s+(\d+)$/);
 
                     let targetItem = null;
+                    const userHistory = getHistory(senderClean, 50);
+
                     if (matchNum) {
                         const index = parseInt(matchNum[2], 10);
-                        const history = getHistory(50);
-                        if (index >= 1 && index <= history.length) {
-                            targetItem = history[index - 1];
+                        if (index >= 1 && index <= userHistory.length) {
+                            targetItem = userHistory[index - 1];
                         }
                     }
 
                     if (!targetItem) {
                         await sock.sendMessage(remoteJid, {
-                            text: `💡 Contoh penggunaan: *publik 1* (agar bisa dibuka siapa saja) atau *privat 1* (agar dikunci).`
+                            text: `💡 Contoh penggunaan: *publik 1* (agar bisa dibuka siapa saja) atau *privat 1* (agar dikunci).\nKetik *cek* untuk melihat daftar file Anda.`
                         }, { quoted: msg });
                         continue;
                     }
@@ -730,25 +769,24 @@ async function startBot() {
                     const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
                     
                     let targetItem = null;
+                    const userHistory = getHistory(senderClean, 50);
 
                     if (lowerText === 'batal' || lowerText === 'hapus terakhir' || lowerText === 'del last') {
-                        const history = getHistory(1);
-                        targetItem = history[0];
+                        const lastList = getHistory(senderClean, 1);
+                        targetItem = lastList[0];
                     } else if (lowerText.match(/^(hapus|del)\s+(\d+)$/)) {
                         const match = lowerText.match(/^(hapus|del)\s+(\d+)$/);
                         const index = parseInt(match[2], 10);
-                        const history = getHistory(50);
-                        if (index >= 1 && index <= history.length) {
-                            targetItem = history[index - 1];
+                        if (index >= 1 && index <= userHistory.length) {
+                            targetItem = userHistory[index - 1];
                         } else {
                             await sock.sendMessage(remoteJid, {
-                                text: `⚠️ Nomor urut file tidak ditemukan. Ketik *cek* untuk melihat nomor file (1 - ${history.length}).`
+                                text: `⚠️ Nomor urut file tidak ditemukan. Ketik *cek* untuk melihat nomor file Anda (1 - ${userHistory.length}).`
                             }, { quoted: msg });
                             continue;
                         }
                     } else if (quotedText) {
-                        const history = getHistory(50);
-                        targetItem = history.find(h => 
+                        targetItem = userHistory.find(h => 
                             quotedText.includes(h.id) || 
                             (h.link && quotedText.includes(h.link)) || 
                             quotedText.includes(h.name)
@@ -756,16 +794,16 @@ async function startBot() {
                     } else {
                         await sock.sendMessage(remoteJid, {
                             text: `💡 *Panduan Menghapus File:*\n\n` +
-                                  `• Ketik *hapus 1* ➔ Hapus file urutan no 1 di daftar *cek*\n` +
-                                  `• Ketik *hapus terakhir* ➔ Hapus file paling baru\n` +
-                                  `• Atau *Swipe Reply* pesan bot lalu ketik *hapus*`
+                                  `• Ketik *hapus 1* ➔ Hapus file nomor 1 di daftar *cek* Anda\n` +
+                                  `• Ketik *hapus terakhir* ➔ Hapus file terakhir yang Anda upload\n` +
+                                  `• Atau *Swipe Reply* pesan file bot lalu ketik *hapus*`
                         }, { quoted: msg });
                         continue;
                     }
 
                     if (!targetItem) {
                         await sock.sendMessage(remoteJid, {
-                            text: `⚠️ File tidak ditemukan dalam riwayat bot. Ketik *cek* untuk melihat daftar file aktif.`
+                            text: `⚠️ File tidak ditemukan dalam riwayat Anda. Anda hanya dapat menghapus file yang Anda unggah sendiri.`
                         }, { quoted: msg });
                         continue;
                     }
@@ -773,7 +811,7 @@ async function startBot() {
                     try {
                         await sock.sendMessage(remoteJid, { react: { text: '🗑️', key: msg.key } });
                         await deleteFileFromDrive(targetItem.id);
-                        deleteFromHistory(targetItem.id);
+                        deleteFromHistory(targetItem.id, senderClean);
 
                         await sock.sendMessage(remoteJid, {
                             text: `🗑️ *File Berhasil Dihapus!*\n\n` +
@@ -858,12 +896,13 @@ async function startBot() {
                     await sock.sendMessage(remoteJid, { react: { text: '☁️', key: msg.key } });
                 } catch (e) {}
 
-                // Upload ke Google Drive dengan dukungan custom folder
+                // Upload ke Google Drive dengan dukungan folder per user dan subfolder
                 const uploadResult = await uploadFileStream({
                     filePath: tempFilePath,
                     fileName: fileName,
                     mimeType: mimetype,
-                    customFolder: customFolder
+                    customFolder: customFolder,
+                    userFolder: userFolderName
                 });
 
                 console.log(`✅ Sukses upload ke Google Drive: ${uploadResult.name} (Folder: ${uploadResult.folderName})`);
@@ -889,7 +928,9 @@ async function startBot() {
                     time: timeStr,
                     link: directLink,
                     folder: uploadResult.folderName,
-                    mimeType: mimetype || mime.lookup(uploadResult.name) || 'application/octet-stream'
+                    mimeType: mimetype || mime.lookup(uploadResult.name) || 'application/octet-stream',
+                    uploader: senderClean,
+                    uploaderName: senderDisplayName
                 });
 
                 // Kirim notifikasi hasil yang sangat rapi

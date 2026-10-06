@@ -88,17 +88,21 @@ async function getOrCreateFolder(drive, folderName, parentId = null) {
 }
 
 /**
- * Upload file besar via stream ke Google Drive (Mendukung custom folder dari caption tag)
+ * Upload file besar via stream ke Google Drive (Mendukung folder per user dan custom folder)
  */
-async function uploadFileStream({ filePath, fileName, mimeType, customFolder = null }) {
+async function uploadFileStream({ filePath, fileName, mimeType, customFolder = null, userFolder = null }) {
     const drive = await getDriveClient();
     let targetFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID?.trim() || null;
 
+    // 1. Isolasi folder per user (berdasarkan nomor/nama pengirim)
+    if (userFolder) {
+        targetFolderId = await getOrCreateFolder(drive, userFolder, targetFolderId);
+    }
+
+    // 2. Sub-folder kategori (#hashtag) atau tanggal
     if (customFolder) {
-        // Jika pengirim memberikan tag folder (contoh: #kuliah, #kerjaan)
         targetFolderId = await getOrCreateFolder(drive, customFolder, targetFolderId);
     } else if (process.env.AUTO_DATE_FOLDER === 'true') {
-        // Jika default folder tanggal aktif
         const today = new Date().toISOString().split('T')[0];
         targetFolderId = await getOrCreateFolder(drive, today, targetFolderId);
     }
@@ -132,9 +136,12 @@ async function uploadFileStream({ filePath, fileName, mimeType, customFolder = n
         });
     } catch (e) {}
 
+    const subFolder = customFolder || (process.env.AUTO_DATE_FOLDER === 'true' ? new Date().toISOString().split('T')[0] : '');
+    const displayFolder = userFolder ? (subFolder ? `${userFolder}/${subFolder}` : userFolder) : (subFolder || 'Root Drive');
+
     return {
         ...response.data,
-        folderName: customFolder || (process.env.AUTO_DATE_FOLDER === 'true' ? new Date().toISOString().split('T')[0] : 'Root Drive')
+        folderName: displayFolder
     };
 }
 
