@@ -374,7 +374,6 @@ async function startBot() {
 
                         const quotaMsg = 
                             `📊 *STATUS KAPASITAS GOOGLE DRIVE*\n\n` +
-                            `👤 *Akun:* ${user.displayName} (${user.emailAddress})\n\n` +
                             `Status: ${progressBar} *${percent}%*\n` +
                             `💾 *Terpakai:* ${formatBytes(numUsage)}\n` +
                             `📦 *Total Kuota:* ${numLimit > 0 ? formatBytes(numLimit) : 'Tak Terbatas'}\n` +
