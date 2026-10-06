@@ -308,6 +308,19 @@ async function renameFileInDrive(fileId, newName) {
     return res.data;
 }
 
+/**
+ * Mengambil daftar file yang ada di dalam sebuah folder Google Drive
+ */
+async function getFilesInFolder(folderId, limit = 50) {
+    const drive = await getDriveClient();
+    const res = await drive.files.list({
+        q: `'${folderId}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false`,
+        pageSize: limit,
+        fields: 'files(id, name, size, mimeType)'
+    });
+    return res.data.files || [];
+}
+
 module.exports = {
     getOAuth2Client,
     getDriveClient,
@@ -319,6 +332,7 @@ module.exports = {
     setFilePermission,
     getUserFolderInfo,
     renameFileInDrive,
+    getFilesInFolder,
     SCOPES,
     TOKEN_PATH,
     CREDENTIALS_PATH

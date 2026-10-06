@@ -10,6 +10,7 @@ const {
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const mime = require('mime-types');
+const archiver = require('archiver');
 require('dotenv').config();
 
 const { 
@@ -20,7 +21,8 @@ const {
     downloadFileFromDrive, 
     setFilePermission,
     getUserFolderInfo,
-    renameFileInDrive
+    renameFileInDrive,
+    getFilesInFolder
 } = require('./googleDrive');
 
 // Direktori penyimpanan session WhatsApp, folder sementara, dan riwayat
@@ -618,13 +620,16 @@ async function startBot() {
                         `*Upload & Folder*\n` +
                         `• Kirim file langsung ➔ simpan otomatis per kategori\n` +
                         `• Caption \`#nama\` ➔ simpan ke folder spesifik\n` +
+                        `• \`upload <link>\` ➔ upload file dari URL internet\n` +
                         `• \`drive\` / \`folder\` ➔ link folder pribadi di Google Drive\n` +
                         `• \`folder <nama>\` ➔ set folder sebelum forward massal\n` +
                         `• \`folder reset\` ➔ kembali ke mode otomatis\n\n` +
-                        `*Manajemen File*\n` +
+                        `*Manajemen File & Riwayat*\n` +
                         `• \`cek\` ➔ riwayat file & link preview\n` +
+                        `• \`cek foto\` / \`cek doc\` / \`cek video\` ➔ filter riwayat\n` +
                         `• \`rename <no> <nama baru>\` ➔ ganti nama file di Drive\n` +
                         `• \`ambil <no>\` ➔ unduh file ke WhatsApp\n` +
+                        `• \`zip <nama folder>\` ➔ unduh 1 folder jadi file ZIP\n` +
                         `• \`hapus <no>\` (atau \`hapus 1-3\`) ➔ hapus dari Drive\n` +
                         `• Balas pesan upload dengan \`hapus\` / \`ambil\` / \`rename <nama>\`\n\n` +
                         `*Info & Akses*\n` +
@@ -825,24 +830,69 @@ async function startBot() {
                 }
 
                 // ==========================================
-                // 2. FITUR CEK RIWAYAT
+                // 2. FITUR CEK RIWAYAT (MENDUKUNG FILTER: FOTO, VIDEO, DOC, AUDIO)
                 // ==========================================
-                if (lowerText === 'cek' || lowerText === 'daftar' || lowerText === 'list' || lowerText === 'riwayat' || (userIsOwner && (lowerText === 'cek all' || lowerText === 'list all'))) {
-                    const isCheckAll = userIsOwner && (lowerText === 'cek all' || lowerText === 'list all');
+                const isCekBase = lowerText.startsWith('cek') || lowerText.startsWith('daftar') || lowerText.startsWith('list') || lowerText.startsWith('riwayat');
+                const isDirectCat = ['foto', 'gambar', 'video', 'doc', 'dokumen', 'pdf', 'audio', 'musik'].includes(lowerText);
+
+                if (isCekBase || isDirectCat) {
+                    let catFilter = null;
+                    let catTitle = '';
+
+                    if (/(foto|gambar|image)/i.test(lowerText)) {
+                        catFilter = 'foto';
+                        catTitle = 'Foto';
+                    } else if (/video/i.test(lowerText)) {
+                        catFilter = 'video';
+                        catTitle = 'Video';
+                    } else if (/(doc|dokumen|pdf|arsip|word|excel)/i.test(lowerText)) {
+                        catFilter = 'dokumen';
+                        catTitle = 'Dokumen';
+                    } else if (/(audio|musik|lagu|suara)/i.test(lowerText)) {
+                        catFilter = 'audio';
+                        catTitle = 'Audio';
+                    }
+
+                    const isCheckAll = userIsOwner && (lowerText.includes('all'));
                     const targetUploader = isCheckAll ? 'ALL' : senderClean;
-                    const history = getHistory(targetUploader, 10);
+                    let history = getHistory(targetUploader, 50);
+
+                    if (catFilter) {
+                        history = history.filter(item => {
+                            const m = (item.mimeType || '').toLowerCase();
+                            const n = (item.name || '').toLowerCase();
+                            if (catFilter === 'foto') {
+                                return m.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic|bmp)$/i.test(n);
+                            }
+                            if (catFilter === 'video') {
+                                return m.startsWith('video/') || /\.(mp4|mkv|mov|avi|webm|3gp)$/i.test(n);
+                            }
+                            if (catFilter === 'dokumen') {
+                                return m.includes('pdf') || m.includes('word') || m.includes('officedocument') || m.includes('text') || /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|zip|rar|7z)$/i.test(n);
+                            }
+                            if (catFilter === 'audio') {
+                                return m.startsWith('audio/') || /\.(mp3|wav|ogg|m4a|aac|opus|flac)$/i.test(n);
+                            }
+                            return true;
+                        });
+                    }
+
+                    history = history.slice(0, 10);
+
                     if (history.length === 0) {
                         await sock.sendMessage(remoteJid, {
-                            text: isCheckAll 
-                                ? 'Belum ada riwayat unggahan di bot ini.'
-                                : 'Belum ada riwayat unggahan Anda.'
+                            text: catFilter
+                                ? `Belum ada riwayat berkas kategori *${catTitle}* Anda.`
+                                : (isCheckAll ? 'Belum ada riwayat unggahan di bot ini.' : 'Belum ada riwayat unggahan Anda.')
                         }, { quoted: msg });
                         continue;
                     }
 
-                    let listText = isCheckAll 
-                        ? `*Semua Unggahan Bot (Admin)* (${history.length} file)\n\n`
-                        : `*Riwayat Unggahan Anda* (${history.length} file)\n\n`;
+                    let listText = catFilter
+                        ? `*Riwayat ${catTitle} Anda* (${history.length} file)\n\n`
+                        : (isCheckAll 
+                            ? `*Semua Unggahan Bot (Admin)* (${history.length} file)\n\n`
+                            : `*Riwayat Unggahan Anda* (${history.length} file)\n\n`);
 
                     history.forEach((item, index) => {
                         let displayFolder = item.folder || '';
@@ -874,7 +924,7 @@ async function startBot() {
                         listText += `\n`;
                     });
 
-                    listText += `_Aksi: \`ambil <no>\` untuk unduh, \`hapus <no>\` atau \`hapus 1-3\` untuk delete._`;
+                    listText += `_Filter: \`cek foto\` | \`cek doc\` | \`cek video\` • Unduh: \`ambil <no>\`_`;
 
                     await sock.sendMessage(remoteJid, { text: listText.trim() }, { quoted: msg });
                     continue;
@@ -1119,6 +1169,239 @@ async function startBot() {
                     } catch (err) {
                         await sock.sendMessage(remoteJid, {
                             text: `❌ Gagal mengubah nama file di Drive: ${err.message}`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 5C. FITUR REMOTE UPLOAD DARI LINK INTERNET (UPLOAD <URL>)
+                // ==========================================
+                const urlMatch = textBody.match(/https?:\/\/[^\s]+/i);
+                if (urlMatch && (lowerText.startsWith('upload') || lowerText.startsWith('unduh') || lowerText.startsWith('up '))) {
+                    const targetUrl = urlMatch[0];
+                    let customName = textBody.replace(/^(upload|unduh|up)\s+/i, '').replace(targetUrl, '').replace(/#([a-zA-Z0-9_-]+)/g, '').trim();
+
+                    let customFolder = null;
+                    const folderMatch = textBody.match(/#([a-zA-Z0-9_-]+)/);
+                    if (folderMatch) {
+                        customFolder = folderMatch[1];
+                    } else {
+                        const sessionFolder = getUserFolderSession(senderClean);
+                        if (sessionFolder) {
+                            customFolder = sessionFolder;
+                        }
+                    }
+
+                    try {
+                        await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
+
+                        console.log(`🌐 Mengunduh file dari URL internet: ${targetUrl}`);
+                        const response = await fetch(targetUrl, {
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                            }
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(`Server URL mengembalikan status ${response.status} (${response.statusText})`);
+                        }
+
+                        let fileName = '';
+                        const cd = response.headers.get('content-disposition');
+                        if (cd && cd.includes('filename=')) {
+                            const cdMatch = cd.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                            if (cdMatch && cdMatch[1]) {
+                                fileName = cdMatch[1].replace(/['"]/g, '').trim();
+                            }
+                        }
+
+                        if (!fileName) {
+                            try {
+                                const parsedUrl = new URL(targetUrl);
+                                const base = path.basename(parsedUrl.pathname);
+                                if (base && base.includes('.')) {
+                                    fileName = decodeURIComponent(base);
+                                }
+                            } catch (e) {}
+                        }
+
+                        const contentType = response.headers.get('content-type') || 'application/octet-stream';
+
+                        if (!fileName) {
+                            const ext = mime.extension(contentType) || 'bin';
+                            fileName = `Remote_${Date.now()}.${ext}`;
+                        }
+
+                        if (customName) {
+                            const curExt = path.extname(fileName);
+                            if (curExt && !customName.toLowerCase().endsWith(curExt.toLowerCase())) {
+                                fileName = `${customName}${curExt}`;
+                            } else {
+                                fileName = customName;
+                            }
+                        }
+
+                        if (!customFolder) {
+                            customFolder = getSmartCategory(fileName, contentType);
+                        }
+
+                        const tempFileName = `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+                        const tempFilePath = path.join(TEMP_DIR, tempFileName);
+
+                        const fileStream = fs.createWriteStream(tempFilePath);
+                        const { Readable } = require('stream');
+                        await new Promise((resolve, reject) => {
+                            Readable.fromWeb(response.body).pipe(fileStream);
+                            fileStream.on('finish', resolve);
+                            fileStream.on('error', reject);
+                        });
+
+                        const stats = fs.statSync(tempFilePath);
+
+                        await sock.sendMessage(remoteJid, { react: { text: '☁️', key: msg.key } });
+
+                        const uploadResult = await uploadFileStream({
+                            filePath: tempFilePath,
+                            fileName: fileName,
+                            mimeType: contentType,
+                            customFolder: customFolder,
+                            userFolder: userFolderName
+                        });
+
+                        try { fs.unlinkSync(tempFilePath); } catch (e) {}
+
+                        const now = new Date();
+                        const timeStr = now.toLocaleDateString('id-ID', {
+                            day: '2-digit', month: 'short', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit'
+                        });
+
+                        const directLink = uploadResult.webViewLink || `https://drive.google.com/open?id=${uploadResult.id}`;
+                        saveToHistory({
+                            id: uploadResult.id,
+                            name: uploadResult.name,
+                            size: formatBytes(uploadResult.size || stats.size),
+                            time: timeStr,
+                            link: directLink,
+                            folder: uploadResult.folderName,
+                            mimeType: contentType || mime.lookup(uploadResult.name) || 'application/octet-stream',
+                            uploader: senderClean,
+                            uploaderName: senderDisplayName
+                        });
+
+                        await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
+
+                        const successMsg = 
+                            `*Upload dari Link Berhasil!*\n\n` +
+                            `• Nama: \`${uploadResult.name}\`\n` +
+                            `• Ukuran: ${formatBytes(uploadResult.size || stats.size)}\n` +
+                            `• Folder: \`${uploadResult.folderName}\`\n\n` +
+                            `🔗 ${directLink}`;
+
+                        await sock.sendMessage(remoteJid, { text: successMsg }, { quoted: msg });
+                    } catch (err) {
+                        console.error('Gagal remote upload:', err);
+                        await sock.sendMessage(remoteJid, { react: { text: '❌', key: msg.key } });
+                        await sock.sendMessage(remoteJid, {
+                            text: `❌ *Gagal Upload dari Link:*\n\n${err.message}`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 5D. FITUR DOWNLOAD FOLDER MENJADI ZIP (ZIP <FOLDER>)
+                // ==========================================
+                if (lowerText.startsWith('zip ') || lowerText === 'zip' || lowerText.startsWith('download folder')) {
+                    let folderQuery = textBody.replace(/^(zip|download folder)\s*/i, '').trim();
+                    const sessionFolder = getUserFolderSession(senderClean);
+
+                    if (!folderQuery) {
+                        folderQuery = sessionFolder || '';
+                    }
+
+                    if (!folderQuery) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `*Panduan Unduh Folder ZIP*\n\n` +
+                                  `Ketik: \`zip <nama folder>\` (contoh: \`zip Liburan\` atau \`zip Dokumen\`)\n\n` +
+                                  `_Bot akan mengompres seluruh file di folder tersebut menjadi 1 berkas ZIP lalu mengirimkannya ke WhatsApp._`
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    try {
+                        await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
+
+                        // 1. Ambil folderId dari Google Drive
+                        const folderInfo = await getUserFolderInfo(userFolderName, folderQuery);
+                        if (!folderInfo || !folderInfo.folderId) {
+                            throw new Error(`Folder "${folderQuery}" tidak ditemukan di Google Drive Anda.`);
+                        }
+
+                        // 2. Ambil daftar file di dalam folder tersebut
+                        const filesInFolder = await getFilesInFolder(folderInfo.folderId, 40);
+                        if (filesInFolder.length === 0) {
+                            await sock.sendMessage(remoteJid, {
+                                text: `⚠️ Folder *${folderQuery}* tidak memiliki file untuk di-zip.`
+                            }, { quoted: msg });
+                            continue;
+                        }
+
+                        await sock.sendMessage(remoteJid, {
+                            text: `📦 Sedang menyiapkan ZIP untuk *${filesInFolder.length} file* dari folder *${folderQuery}*... Mohon tunggu sebentar.`
+                        }, { quoted: msg });
+
+                        // 3. Download dan buat ZIP
+                        const cleanZipName = `${folderQuery.replace(/[^a-zA-Z0-9_-]/g, '_')}_Backup.zip`;
+                        const zipFilePath = path.join(TEMP_DIR, `zip_${Date.now()}_${cleanZipName}`);
+                        const outputStream = fs.createWriteStream(zipFilePath);
+                        const archive = archiver('zip', { zlib: { level: 6 } });
+
+                        const archivePromise = new Promise((resolve, reject) => {
+                            outputStream.on('close', resolve);
+                            archive.on('error', reject);
+                        });
+
+                        archive.pipe(outputStream);
+
+                        const downloadedTempPaths = [];
+                        for (const file of filesInFolder) {
+                            try {
+                                const singleTemp = path.join(TEMP_DIR, `tmp_z_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+                                await downloadFileFromDrive(file.id, singleTemp);
+                                downloadedTempPaths.push(singleTemp);
+                                archive.file(singleTemp, { name: file.name });
+                            } catch (e) {
+                                console.error(`Lewati file ${file.name} dalam zip:`, e.message);
+                            }
+                        }
+
+                        await archive.finalize();
+                        await archivePromise;
+
+                        downloadedTempPaths.forEach(p => {
+                            try { fs.unlinkSync(p); } catch (e) {}
+                        });
+
+                        const zipStats = fs.statSync(zipFilePath);
+
+                        // Kirim file ZIP ke WhatsApp
+                        await sock.sendMessage(remoteJid, {
+                            document: fs.readFileSync(zipFilePath),
+                            fileName: cleanZipName,
+                            mimetype: 'application/zip',
+                            caption: `📦 *Folder ZIP: ${folderQuery}*\n• Total: ${filesInFolder.length} file • ${formatBytes(zipStats.size)}`
+                        }, { quoted: msg });
+
+                        try { fs.unlinkSync(zipFilePath); } catch (e) {}
+                        await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
+
+                    } catch (err) {
+                        console.error('Gagal membuat zip folder:', err);
+                        await sock.sendMessage(remoteJid, { react: { text: '❌', key: msg.key } });
+                        await sock.sendMessage(remoteJid, {
+                            text: `❌ Gagal membuat berkas ZIP: ${err.message}`
                         }, { quoted: msg });
                     }
                     continue;
