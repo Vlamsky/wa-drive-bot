@@ -267,6 +267,47 @@ async function setFilePermission(fileId, isPublic) {
     }
 }
 
+/**
+ * Mengambil link dan ID folder Google Drive milik user
+ */
+async function getUserFolderInfo(userFolder, subFolder = null) {
+    const drive = await getDriveClient();
+    let rootFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID?.trim() || null;
+    let targetFolderId = rootFolderId;
+
+    if (userFolder) {
+        targetFolderId = await getOrCreateFolder(drive, userFolder, targetFolderId);
+    }
+
+    let currentDisplayName = userFolder || 'Root Drive';
+
+    if (subFolder) {
+        targetFolderId = await getOrCreateFolder(drive, subFolder, targetFolderId);
+        currentDisplayName = `${userFolder}/${subFolder}`;
+    }
+
+    return {
+        folderId: targetFolderId,
+        folderName: currentDisplayName,
+        folderLink: targetFolderId ? `https://drive.google.com/drive/folders/${targetFolderId}` : null
+    };
+}
+
+/**
+ * Mengubah nama file di Google Drive
+ */
+async function renameFileInDrive(fileId, newName) {
+    const drive = await getDriveClient();
+    const res = await drive.files.update({
+        fileId: fileId,
+        requestBody: {
+            name: newName
+        },
+        fields: 'id, name, webViewLink'
+    });
+    return res.data;
+}
+
 module.exports = {
     getOAuth2Client,
     getDriveClient,
@@ -276,6 +317,8 @@ module.exports = {
     searchDriveFiles,
     downloadFileFromDrive,
     setFilePermission,
+    getUserFolderInfo,
+    renameFileInDrive,
     SCOPES,
     TOKEN_PATH,
     CREDENTIALS_PATH

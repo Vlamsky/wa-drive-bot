@@ -18,7 +18,9 @@ const {
     getDriveQuota, 
     searchDriveFiles, 
     downloadFileFromDrive, 
-    setFilePermission 
+    setFilePermission,
+    getUserFolderInfo,
+    renameFileInDrive
 } = require('./googleDrive');
 
 // Direktori penyimpanan session WhatsApp, folder sementara, dan riwayat
@@ -230,6 +232,24 @@ function deleteFromHistory(fileId, userPhone = null) {
             history = history.filter(h => h.id !== fileId);
             fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
             return item;
+        }
+    } catch (e) {}
+    return null;
+}
+
+/**
+ * Mengubah nama file tertentu di riwayat lokal
+ */
+function updateHistoryFileName(fileId, newName) {
+    try {
+        if (fs.existsSync(HISTORY_FILE)) {
+            let history = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+            const item = history.find(h => h.id === fileId);
+            if (item) {
+                item.name = newName;
+                fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
+                return item;
+            }
         }
     } catch (e) {}
     return null;
@@ -598,19 +618,19 @@ async function startBot() {
                         `*Upload & Folder*\n` +
                         `• Kirim file langsung ➔ simpan otomatis per kategori\n` +
                         `• Caption \`#nama\` ➔ simpan ke folder spesifik\n` +
+                        `• \`drive\` / \`folder\` ➔ link folder pribadi di Google Drive\n` +
                         `• \`folder <nama>\` ➔ set folder sebelum forward massal\n` +
                         `• \`folder reset\` ➔ kembali ke mode otomatis\n\n` +
-                        `*Perintah Pengguna*\n` +
-                        `• \`cek\` ➔ riwayat file Anda\n` +
-                        `• \`status\` ➔ profil & kuota penyimpanan\n` +
-                        `• \`cari <kata>\` ➔ cari file di riwayat Anda\n` +
+                        `*Manajemen File*\n` +
+                        `• \`cek\` ➔ riwayat file & link preview\n` +
+                        `• \`rename <no> <nama baru>\` ➔ ganti nama file di Drive\n` +
                         `• \`ambil <no>\` ➔ unduh file ke WhatsApp\n` +
-                        `• \`hapus <no>\` ➔ hapus file dari Drive\n` +
-                        `• \`publik <no>\` / \`privat <no>\` ➔ atur akses link\n\n` +
-                        `*Admin Whitelist*\n` +
-                        `• \`+user <no>\` ➔ tambah izin nomor\n` +
-                        `• \`-user <no>\` ➔ hapus izin nomor\n` +
-                        `• \`listuser\` ➔ daftar nomor terdaftar`;
+                        `• \`hapus <no>\` (atau \`hapus 1-3\`) ➔ hapus dari Drive\n` +
+                        `• Balas pesan upload dengan \`hapus\` / \`ambil\` / \`rename <nama>\`\n\n` +
+                        `*Info & Akses*\n` +
+                        `• \`status\` / \`kuota\` ➔ profil & kuota penyimpanan\n` +
+                        `• \`cari <kata>\` ➔ cari file di riwayat\n` +
+                        `• \`publik <no>\` / \`privat <no>\` ➔ atur izin link`;
 
                     await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
                     continue;
@@ -653,28 +673,58 @@ async function startBot() {
                 }
 
                 // ==========================================
-                // 1B. FITUR SET FOLDER SESI (UNTUK FORWARD BANYAK FILE SEKALIGUS)
+                // 1B. FITUR AKSES LINK FOLDER DRIVE (DRIVE / LINK FOLDER)
+                // ==========================================
+                if (lowerText === 'drive' || lowerText === 'gdrive' || lowerText === 'link folder' || lowerText === 'folder link') {
+                    try {
+                        const sessionFolder = getUserFolderSession(senderClean);
+                        const folderInfo = await getUserFolderInfo(userFolderName, sessionFolder);
+
+                        const folderMsg = 
+                            `*Folder Google Drive Anda*\n\n` +
+                            `📁 *${folderInfo.folderName}*\n` +
+                            `🔗 ${folderInfo.folderLink}\n\n` +
+                            `_Klik link di atas untuk melihat seluruh berkas Anda di Google Drive._`;
+
+                        await sock.sendMessage(remoteJid, { text: folderMsg }, { quoted: msg });
+                    } catch (e) {
+                        await sock.sendMessage(remoteJid, { text: `Gagal mengambil link folder: ${e.message}` }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 1C. FITUR SET FOLDER SESI (UNTUK FORWARD BANYAK FILE SEKALIGUS)
                 // ==========================================
                 if (lowerText.startsWith('folder') || lowerText.startsWith('set folder')) {
                     const arg = textBody.replace(/^(set\s+)?folder\s*/i, '').trim();
                     const lowerArg = arg.toLowerCase();
 
-                    if (!arg || lowerArg === 'status' || lowerArg === 'cek') {
+                    if (!arg || lowerArg === 'status' || lowerArg === 'cek' || lowerArg === 'link') {
                         const current = getUserFolderSession(senderClean);
-                        if (current) {
-                            await sock.sendMessage(remoteJid, {
-                                text: `*Folder Sesi Aktif: \`${current}\`*\n\n` +
-                                      `Semua file yang Anda kirim atau teruskan akan otomatis masuk ke folder ini.\n\n` +
-                                      `• \`folder reset\` ➔ kembali ke otomatis\n` +
-                                      `• \`folder <nama>\` ➔ ganti nama folder`
-                            }, { quoted: msg });
-                        } else {
-                            await sock.sendMessage(remoteJid, {
-                                text: `*Folder Sesi: Nonaktif (Otomatis)*\n\n` +
-                                      `File akan otomatis dipisahkan berdasarkan kategori.\n\n` +
-                                      `_Untuk forward banyak file ke satu folder, ketik:_\n` +
-                                      `\`folder NamaFolder\` (contoh: \`folder Kuliah\`)`
-                            }, { quoted: msg });
+                        try {
+                            const folderInfo = await getUserFolderInfo(userFolderName, current);
+                            if (current) {
+                                await sock.sendMessage(remoteJid, {
+                                    text: `*Folder Sesi Aktif: \`${current}\`*\n\n` +
+                                          `• Folder Induk: \`${folderInfo.folderName}\`\n` +
+                                          `🔗 ${folderInfo.folderLink}\n\n` +
+                                          `Semua file yang Anda kirim atau teruskan akan otomatis masuk ke folder ini.\n\n` +
+                                          `• \`folder reset\` ➔ kembali ke mode otomatis\n` +
+                                          `• \`folder <nama>\` ➔ ganti nama folder`
+                                }, { quoted: msg });
+                            } else {
+                                await sock.sendMessage(remoteJid, {
+                                    text: `*Folder Google Drive Anda*\n\n` +
+                                          `📁 *${folderInfo.folderName}*\n` +
+                                          `🔗 ${folderInfo.folderLink}\n\n` +
+                                          `Status: Mode Otomatis (dibagi per kategori foto, dokumen, video).\n\n` +
+                                          `_Untuk forward banyak file ke satu folder, ketik:_\n` +
+                                          `\`folder <nama>\` (contoh: \`folder Liburan\`)`
+                                }, { quoted: msg });
+                            }
+                        } catch (e) {
+                            await sock.sendMessage(remoteJid, { text: `Gagal mengambil info folder: ${e.message}` }, { quoted: msg });
                         }
                         continue;
                     }
@@ -934,9 +984,26 @@ async function startBot() {
                         }
                     }
 
+                    // Dukungan Swipe / Quote Reply: balas pesan upload dengan kata "ambil"
+                    if (!targetFile) {
+                        const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
+                        const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
+                        const qCaption = quoted?.imageMessage?.caption || quoted?.videoMessage?.caption || quoted?.documentMessage?.caption || '';
+                        const qFileName = quoted?.documentMessage?.fileName || '';
+                        const qFull = `${quotedText} ${qCaption} ${qFileName}`.trim();
+
+                        if (qFull) {
+                            targetFile = userHistory.find(h => 
+                                (h.id && qFull.includes(h.id)) || 
+                                (h.link && qFull.includes(h.link)) || 
+                                (h.name && qFull.includes(h.name))
+                            );
+                        }
+                    }
+
                     if (!targetFile) {
                         await sock.sendMessage(remoteJid, {
-                            text: `⚠️ File tidak ditemukan dalam riwayat unggahan Anda.\nKetik *cek* untuk melihat nomor file Anda (contoh: *ambil 1*) atau ketik *cari <nama file>*.`
+                            text: `⚠️ File tidak ditemukan dalam riwayat unggahan Anda.\nKetik *cek* untuk melihat nomor file (contoh: *ambil 1*) atau balas langsung pesan upload dengan *ambil*.`
                         }, { quoted: msg });
                         continue;
                     }
@@ -976,6 +1043,82 @@ async function startBot() {
                     } catch (err) {
                         await sock.sendMessage(remoteJid, {
                             text: `❌ Gagal mengunduh file dari Google Drive: ${err.message}`
+                        }, { quoted: msg });
+                    }
+                    continue;
+                }
+
+                // ==========================================
+                // 5B. FITUR RENAME FILE DI GOOGLE DRIVE (NOMOR URUT & QUOTE REPLY)
+                // ==========================================
+                if (lowerText.startsWith('rename') || lowerText.startsWith('gantinama') || lowerText.startsWith('ubahnama')) {
+                    const userHistory = getHistory(senderClean, 50);
+                    let targetFile = null;
+                    let newNameInput = '';
+
+                    const matchNum = textBody.match(/^(rename|gantinama|ubahnama)\s+(\d+)\s+(.+)$/i);
+                    if (matchNum) {
+                        const index = parseInt(matchNum[2], 10);
+                        newNameInput = matchNum[3].trim();
+                        if (index >= 1 && index <= userHistory.length) {
+                            targetFile = userHistory[index - 1];
+                        } else {
+                            await sock.sendMessage(remoteJid, {
+                                text: `Nomor urut tidak valid. Ketik \`cek\` untuk melihat daftar file (1 - ${userHistory.length}).`
+                            }, { quoted: msg });
+                            continue;
+                        }
+                    } else {
+                        // Cek apakah melalui quote reply: balas pesan upload dengan "rename <nama baru>"
+                        const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
+                        const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
+                        const qCaption = quoted?.imageMessage?.caption || quoted?.videoMessage?.caption || quoted?.documentMessage?.caption || '';
+                        const qFileName = quoted?.documentMessage?.fileName || '';
+                        const qFull = `${quotedText} ${qCaption} ${qFileName}`.trim();
+                        const customNewName = textBody.replace(/^(rename|gantinama|ubahnama)\s*/i, '').trim();
+
+                        if (qFull && customNewName) {
+                            newNameInput = customNewName;
+                            targetFile = userHistory.find(h => 
+                                (h.id && qFull.includes(h.id)) || 
+                                (h.link && qFull.includes(h.link)) || 
+                                (h.name && qFull.includes(h.name))
+                            );
+                        }
+                    }
+
+                    if (!targetFile || !newNameInput) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `*Panduan Ganti Nama File*\n\n` +
+                                  `• Dengan nomor: \`rename 1 Dokumen Penting.pdf\`\n` +
+                                  `• Dengan balas pesan: Swipe/Balas pesan upload dari bot lalu ketik \`rename Nama Baru\``
+                        }, { quoted: msg });
+                        continue;
+                    }
+
+                    const oldName = targetFile.name;
+                    const oldExt = path.extname(oldName);
+
+                    // Pertahankan ekstensi jika pengguna tidak menyertakannya
+                    if (oldExt && !newNameInput.toLowerCase().endsWith(oldExt.toLowerCase())) {
+                        newNameInput = `${newNameInput}${oldExt}`;
+                    }
+
+                    try {
+                        await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
+                        await renameFileInDrive(targetFile.id, newNameInput);
+                        updateHistoryFileName(targetFile.id, newNameInput);
+
+                        await sock.sendMessage(remoteJid, { react: { text: '✅', key: msg.key } });
+                        await sock.sendMessage(remoteJid, {
+                            text: `*Nama File Berhasil Diubah*\n\n` +
+                                  `• Semula: \`${oldName}\`\n` +
+                                  `• Menjadi: \`${newNameInput}\`\n\n` +
+                                  `🔗 https://drive.google.com/open?id=${targetFile.id}`
+                        }, { quoted: msg });
+                    } catch (err) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `❌ Gagal mengubah nama file di Drive: ${err.message}`
                         }, { quoted: msg });
                     }
                     continue;
@@ -1079,13 +1222,19 @@ async function startBot() {
                                 targetItems.push(userHistory[idx - 1]);
                             }
                         });
-                    } else if (quotedText) {
-                        const found = userHistory.find(h => 
-                            quotedText.includes(h.id) || 
-                            (h.link && quotedText.includes(h.link)) || 
-                            quotedText.includes(h.name)
-                        );
-                        if (found) targetItems.push(found);
+                    } else if (quoted) {
+                        const qCaption = quoted.imageMessage?.caption || quoted.videoMessage?.caption || quoted.documentMessage?.caption || '';
+                        const qFileName = quoted.documentMessage?.fileName || '';
+                        const qFull = `${quotedText} ${qCaption} ${qFileName}`.trim();
+
+                        if (qFull) {
+                            const found = userHistory.find(h => 
+                                (h.id && qFull.includes(h.id)) || 
+                                (h.link && qFull.includes(h.link)) || 
+                                (h.name && qFull.includes(h.name))
+                            );
+                            if (found) targetItems.push(found);
+                        }
                     }
 
                     if (targetItems.length === 0) {
