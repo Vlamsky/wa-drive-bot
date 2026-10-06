@@ -69,22 +69,36 @@ async function getOrCreateFolder(drive, folderName, parentId = null) {
         spaces: 'drive'
     });
 
+    let folderId = null;
+
     if (listRes.data.files && listRes.data.files.length > 0) {
-        return listRes.data.files[0].id;
+        folderId = listRes.data.files[0].id;
+    } else {
+        const fileMetadata = {
+            name: folderName,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: parentId ? [parentId] : undefined
+        };
+
+        const folderRes = await drive.files.create({
+            requestBody: fileMetadata,
+            fields: 'id'
+        });
+        folderId = folderRes.data.id;
     }
 
-    const fileMetadata = {
-        name: folderName,
-        mimeType: 'application/vnd.google-apps.folder',
-        parents: parentId ? [parentId] : undefined
-    };
+    // Set permission agar folder bisa dibuka siapa saja yang memiliki link tanpa minta izin ke owner
+    try {
+        await drive.permissions.create({
+            fileId: folderId,
+            requestBody: {
+                role: 'reader',
+                type: 'anyone'
+            }
+        });
+    } catch (e) {}
 
-    const folderRes = await drive.files.create({
-        requestBody: fileMetadata,
-        fields: 'id'
-    });
-
-    return folderRes.data.id;
+    return folderId;
 }
 
 /**

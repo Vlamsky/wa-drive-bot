@@ -554,8 +554,11 @@ async function startBot() {
                 const senderJid = msg.key.participant || remoteJid;
 
                 const senderClean = normalizePhone(resolveLidToPhone(senderJid) || senderJid);
-                const senderDisplayName = (msg.pushName || '').replace(/[^a-zA-Z0-9_-]/g, '').trim();
-                const userFolderName = senderDisplayName ? `${senderDisplayName}_${senderClean}` : `User_${senderClean}`;
+                const cleanPushName = (msg.pushName || '').trim();
+                const shortName = cleanPushName ? cleanPushName.split(/\s+/)[0].replace(/[^a-zA-Z0-9]/g, '') : '';
+                const last4Phone = senderClean.slice(-4) || '0000';
+                const userFolderName = shortName ? `${shortName}_${last4Phone}` : `User_${last4Phone}`;
+                const senderDisplayName = shortName || `User_${last4Phone}`;
                 const userIsOwner = isOwner(remoteJid, isFromMe, msg.key.participant);
 
                 // Jika nomor tidak diizinkan, beri tahu nomor tersebut
