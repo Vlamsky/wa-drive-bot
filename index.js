@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const {
     makeWASocket,
     useMultiFileAuthState,
@@ -254,6 +255,42 @@ function scheduleBatchDigest(sock, remoteJid, uploadItem) {
 }
 
 
+/**
+ * Menghitung hash MD5 dari file untuk deduplikasi akurat
+ */
+function getFileHash(filePath) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('md5');
+        const stream = fs.createReadStream(filePath);
+        stream.on('data', chunk => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+        stream.on('error', reject);
+    });
+}
+
+/**
+ * Mencari apakah file sudah pernah diunggah sebelumnya (Anti-Duplikat)
+ */
+function findDuplicateInHistory(fileHash, rawBytes, fileName, userPhone = null) {
+    try {
+        if (!fs.existsSync(HISTORY_FILE)) return null;
+        const history = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+        for (const item of history) {
+            // Cocokkan berdasarkan MD5 hash jika ada
+            if (fileHash && item.fileHash && item.fileHash === fileHash) {
+                return item;
+            }
+            // Atau cocokkan jika nama file dan ukuran bytes sama persis
+            if (rawBytes && item.rawBytes === rawBytes && item.name === fileName) {
+                if (!userPhone || !item.uploader || item.uploader === userPhone || item.uploader.endsWith(userPhone) || userPhone.endsWith(item.uploader)) {
+                    return item;
+                }
+            }
+        }
+    } catch (e) { }
+    return null;
+}
+
 function saveToHistory(entry) {
     let history = [];
     try {
@@ -264,7 +301,7 @@ function saveToHistory(entry) {
         history = [];
     }
     history.unshift(entry);
-    if (history.length > 50) history = history.slice(0, 50);
+    if (history.length > 200) history = history.slice(0, 200);
     fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
 }
 
@@ -397,7 +434,6 @@ function isOwner(remoteJid, isFromMe, participant) {
 
     const candidates = [jidClean, partClean, resolvedPhoneJid, resolvedPhonePart].filter(Boolean);
 
-    // Ambil nomor admin/owner dari OWNER_NUMBERS atau fallback ke ALLOWED_NUMBERS (jika bukan '*')
     const ownerEnv = process.env.OWNER_NUMBERS?.trim() ||
         (process.env.ALLOWED_NUMBERS !== '*' ? process.env.ALLOWED_NUMBERS?.trim() : '') || '';
 
@@ -452,7 +488,8 @@ function extractMediaContent(message) {
             fileName: unwrapMsg.documentMessage.fileName || `doc_${Date.now()}`,
             mimetype: unwrapMsg.documentMessage.mimetype || 'application/octet-stream',
             fileLength: Number(unwrapMsg.documentMessage.fileLength || 0),
-            caption: caption.trim()
+            caption: caption.trim(),
+            contextInfo: unwrapMsg.documentMessage.contextInfo || null
         };
     }
 
@@ -465,7 +502,8 @@ function extractMediaContent(message) {
             fileName: `IMG_${Date.now()}.${ext}`,
             mimetype: unwrapMsg.imageMessage.mimetype || 'image/jpeg',
             fileLength: Number(unwrapMsg.imageMessage.fileLength || 0),
-            caption: caption.trim()
+            caption: caption.trim(),
+            contextInfo: unwrapMsg.imageMessage.contextInfo || null
         };
     }
 
@@ -478,19 +516,23 @@ function extractMediaContent(message) {
             fileName: `VID_${Date.now()}.${ext}`,
             mimetype: unwrapMsg.videoMessage.mimetype || 'video/mp4',
             fileLength: Number(unwrapMsg.videoMessage.fileLength || 0),
-            caption: caption.trim()
+            caption: caption.trim(),
+            contextInfo: unwrapMsg.videoMessage.contextInfo || null
         };
     }
 
     if (unwrapMsg.audioMessage) {
-        const ext = mime.extension(unwrapMsg.audioMessage.mimetype) || 'mp3';
+        const isPtt = !!unwrapMsg.audioMessage.ptt;
+        const ext = isPtt ? 'opus' : (mime.extension(unwrapMsg.audioMessage.mimetype) || 'mp3');
         return {
             type: 'audio',
             payload: unwrapMsg.audioMessage,
-            fileName: `AUD_${Date.now()}.${ext}`,
-            mimetype: unwrapMsg.audioMessage.mimetype || 'audio/mpeg',
+            fileName: `${isPtt ? 'VN' : 'AUD'}_${Date.now()}.${ext}`,
+            mimetype: unwrapMsg.audioMessage.mimetype || (isPtt ? 'audio/ogg; codecs=opus' : 'audio/mpeg'),
             fileLength: Number(unwrapMsg.audioMessage.fileLength || 0),
-            caption: ''
+            caption: '',
+            isPtt,
+            contextInfo: unwrapMsg.audioMessage.contextInfo || null
         };
     }
 
@@ -621,84 +663,124 @@ async function startBot() {
                     continue;
                 }
 
-                const textBody = (
+                const isGroup = remoteJid.endsWith('@g.us');
+                const groupMode = process.env.GROUP_MODE?.trim().toLowerCase() || 'smart';
+
+                if (isGroup && groupMode === 'off') {
+                    continue;
+                }
+
+                const rawText = (
                     msg.message.conversation ||
                     msg.message.extendedTextMessage?.text ||
                     ''
                 ).trim();
-                const lowerText = textBody.toLowerCase();
 
-                // ==========================================
-                // 1. FITUR MENU / HELP
-                // ==========================================
-                if (lowerText === 'menu' || lowerText === 'help' || lowerText === 'bantuan') {
-                    const menuText =
-                        `*Google Drive Bot*\n` +
-                        `Upload file otomatis dengan resolusi asli.\n\n` +
-                        `*Upload & Folder*\n` +
-                        `• Kirim file langsung ➔ simpan otomatis per kategori\n` +
-                        `• Caption \`#nama\` ➔ simpan ke folder spesifik\n` +
-                        `• \`upload <link>\` ➔ upload file dari URL internet\n` +
-                        `• \`drive\` / \`folder\` ➔ link folder pribadi di Google Drive\n` +
-                        `• \`folder <nama>\` ➔ set folder sebelum forward massal\n` +
-                        `• \`folder reset\` ➔ kembali ke mode otomatis\n\n` +
-                        `*Manajemen File & Riwayat*\n` +
-                        `• \`cek\` ➔ riwayat file & link preview\n` +
-                        `• \`cek foto\` / \`cek doc\` / \`cek video\` ➔ filter riwayat\n` +
-                        `• \`rename <no> <nama baru>\` ➔ ganti nama file di Drive\n` +
-                        `• \`ambil <no>\` ➔ unduh file ke WhatsApp\n` +
-                        `• \`zip <nama folder>\` ➔ unduh 1 folder jadi file ZIP\n` +
-                        `• \`hapus <no>\` (atau \`hapus 1-3\`) ➔ hapus dari Drive\n` +
-                        `• Balas pesan upload dengan \`hapus\` / \`ambil\` / \`rename <nama>\`\n\n` +
-                        `*Info & Akses*\n` +
-                        `• \`status\` / \`kuota\` ➔ profil & kuota penyimpanan\n` +
-                        `• \`cari <kata>\` ➔ cari file di riwayat\n` +
-                        `• \`publik <no>\` / \`privat <no>\` ➔ atur izin link`;
+                // Cek apakah bot di-mention di teks
+                const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
+                const isBotMentioned = (myBotNumber && mentionedJids.some(j => j.includes(myBotNumber))) ||
+                    (myBotNumber && rawText.includes(`@${myBotNumber}`));
 
-                    await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
-                    continue;
+                // Cek apakah me-reply pesan dari bot
+                const quotedParticipant = msg.message.extendedTextMessage?.contextInfo?.participant || '';
+                const isReplyingBot = myBotNumber && quotedParticipant.includes(myBotNumber);
+
+                // Normalisasi teks perintah: hilangkan mention bot (@bot)
+                let commandText = rawText;
+                if (myBotNumber && commandText.includes(`@${myBotNumber}`)) {
+                    commandText = commandText.replace(new RegExp(`@${myBotNumber}`, 'g'), '').trim();
                 }
 
-                // ==========================================
-                // 1A. FITUR PROFIL & STATUS
-                // ==========================================
-                if (lowerText === '.me' || lowerText === 'me' || lowerText === 'status' || lowerText === 'profil' || lowerText === 'profile') {
-                    const myHistory = getHistory(senderClean, 50);
-                    const totalFiles = myHistory.length;
-                    const sessionFolder = getUserFolderSession(senderClean) || 'Otomatis (Kategori)';
-
-                    let progressBar = '[■□□□□□□□□□]';
-                    let percent = 0;
-                    let numLimit = 0;
-                    let numUsage = 0;
-                    try {
-                        const quotaData = await getDriveQuota();
-                        const { limit, usage } = quotaData.storageQuota;
-                        numLimit = Number(limit || 0);
-                        numUsage = Number(usage || 0);
-                        percent = numLimit > 0 ? Math.round((numUsage / numLimit) * 100) : 0;
-                        progressBar = makeProgressBar(percent);
-                    } catch (e) { }
-
-                    const profileMsg =
-                        `*Profil Pengguna*\n\n` +
-                        `• Nomor: \`${senderClean}\`\n` +
-                        `• Akses: ${userIsOwner ? 'Owner / Admin' : 'Terdaftar'}\n` +
-                        `• Folder Sesi: \`${sessionFolder}\`\n` +
-                        `• File Terunggah: ${totalFiles} file\n\n` +
-                        `*Kapasitas Google Drive*\n` +
-                        `• Terpakai: ${formatBytes(numUsage)} dari ${numLimit > 0 ? formatBytes(numLimit) : 'Tak Terbatas'} (${percent}%)\n` +
-                        `• Status: ${progressBar}\n\n` +
-                        `_Ketik \`menu\` untuk opsi lain atau \`cek\` untuk daftar file._`;
-
-                    await sock.sendMessage(remoteJid, { text: profileMsg }, { quoted: msg });
-                    continue;
+                // Cek apakah perintah diawali prefix (!, ., /, #)
+                const hasPrefix = /^[\!\.\/\#]/.test(commandText);
+                if (hasPrefix) {
+                    commandText = commandText.slice(1).trim();
                 }
 
-                // ==========================================
-                // 1B. FITUR AKSES LINK FOLDER DRIVE (DRIVE / LINK FOLDER)
-                // ==========================================
-                if (lowerText === 'drive' || lowerText === 'gdrive' || lowerText === 'link folder' || lowerText === 'folder link') {
+                const textBody = commandText;
+                const lowerText = commandText.toLowerCase();
+
+                // Mode Grup Pintar: di grup WhatsApp, perintah teks hanya diproses jika:
+                // 1. Memiliki prefix (!, ., /, #) ATAU
+                // 2. Bot di-mention (@bot) ATAU
+                // 3. Me-reply pesan dari bot
+                const isCommandAllowed = !isGroup || groupMode === 'all' || hasPrefix || isBotMentioned || isReplyingBot;
+
+                if (isCommandAllowed) {
+                    // ==========================================
+                    // 1. FITUR MENU / HELP
+                    // ==========================================
+                    if (lowerText === 'menu' || lowerText === 'help' || lowerText === 'bantuan' || lowerText === 'm') {
+                        const menuText =
+                            `*Google Drive Bot*\n` +
+                            `Upload file otomatis dengan resolusi asli.\n\n` +
+                            `*Upload & Folder*\n` +
+                            `• Kirim file langsung ➔ simpan otomatis per kategori\n` +
+                            `• Caption \`#nama\` ➔ simpan ke folder spesifik\n` +
+                            `• \`upload <link>\` ➔ upload file dari URL internet\n` +
+                            `• \`drive\` / \`d\` ➔ link folder pribadi di Google Drive\n` +
+                            `• \`folder <nama>\` ➔ set folder sebelum forward massal\n` +
+                            `• \`folder reset\` ➔ kembali ke mode otomatis\n\n` +
+                            `*Manajemen File & Riwayat*\n` +
+                            `• \`cek\` / \`c\` ➔ riwayat file & link preview\n` +
+                            `• \`cek foto\` / \`cek doc\` / \`cek video\` ➔ filter riwayat\n` +
+                            `• \`rename <no> <nama baru>\` ➔ ganti nama file di Drive\n` +
+                            `• \`ambil <no>\` ➔ unduh file ke WhatsApp\n` +
+                            `• \`zip <nama folder>\` ➔ unduh 1 folder jadi file ZIP\n` +
+                            `• \`hapus <no>\` (atau \`hapus 1-3\`) ➔ hapus dari Drive\n` +
+                            `• Balas pesan upload dengan \`hapus\` / \`ambil\` / \`rename <nama>\`\n\n` +
+                            `*Info & Akses*\n` +
+                            `• \`status\` / \`s\` ➔ profil & kuota penyimpanan\n` +
+                            `• \`cari <kata>\` ➔ cari file di riwayat\n` +
+                            `• \`publik <no>\` / \`privat <no>\` ➔ atur izin link\n\n` +
+                            `*Grup WhatsApp (Mode Pintar)*\n` +
+                            `• Beri caption \`#drive\` pada file agar tersimpan ke cloud\n` +
+                            `• Awali perintah dengan prefix \`!\`, \`.\`, \`/\` (contoh: \`!menu\`)`;
+
+                        await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
+                        continue;
+                    }
+
+                    // ==========================================
+                    // 1A. FITUR PROFIL & STATUS
+                    // ==========================================
+                    if (lowerText === '.me' || lowerText === 'me' || lowerText === 'status' || lowerText === 'profil' || lowerText === 'profile' || lowerText === 's') {
+                        const myHistory = getHistory(senderClean, 50);
+                        const totalFiles = myHistory.length;
+                        const sessionFolder = getUserFolderSession(senderClean) || 'Otomatis (Kategori)';
+
+                        let progressBar = '[■□□□□□□□□□]';
+                        let percent = 0;
+                        let numLimit = 0;
+                        let numUsage = 0;
+                        try {
+                            const quotaData = await getDriveQuota();
+                            const { limit, usage } = quotaData.storageQuota;
+                            numLimit = Number(limit || 0);
+                            numUsage = Number(usage || 0);
+                            percent = numLimit > 0 ? Math.round((numUsage / numLimit) * 100) : 0;
+                            progressBar = makeProgressBar(percent);
+                        } catch (e) { }
+
+                        const profileMsg =
+                            `*Profil Pengguna*\n\n` +
+                            `• Nomor: \`${senderClean}\`\n` +
+                            `• Akses: ${userIsOwner ? 'Owner / Admin' : 'Terdaftar'}\n` +
+                            `• Folder Sesi: \`${sessionFolder}\`\n` +
+                            `• File Terunggah: ${totalFiles} file\n\n` +
+                            `*Kapasitas Google Drive*\n` +
+                            `• Terpakai: ${formatBytes(numUsage)} dari ${numLimit > 0 ? formatBytes(numLimit) : 'Tak Terbatas'} (${percent}%)\n` +
+                            `• Status: ${progressBar}\n\n` +
+                            `_Ketik \`menu\` untuk opsi lain atau \`cek\` untuk daftar file._`;
+
+                        await sock.sendMessage(remoteJid, { text: profileMsg }, { quoted: msg });
+                        continue;
+                    }
+
+                    // ==========================================
+                    // 1B. FITUR AKSES LINK FOLDER DRIVE (DRIVE / LINK FOLDER)
+                    // ==========================================
+                    if (lowerText === 'drive' || lowerText === 'gdrive' || lowerText === 'link folder' || lowerText === 'folder link' || lowerText === 'd') {
                     try {
                         const sessionFolder = getUserFolderSession(senderClean);
                         const folderInfo = await getUserFolderInfo(userFolderName, sessionFolder);
@@ -850,7 +932,7 @@ async function startBot() {
                 // ==========================================
                 // 2. FITUR CEK RIWAYAT (MENDUKUNG FILTER: FOTO, VIDEO, DOC, AUDIO)
                 // ==========================================
-                const isCekBase = lowerText.startsWith('cek') || lowerText.startsWith('daftar') || lowerText.startsWith('list') || lowerText.startsWith('riwayat');
+                const isCekBase = lowerText.startsWith('cek') || lowerText.startsWith('daftar') || lowerText.startsWith('list') || lowerText.startsWith('riwayat') || lowerText === 'c' || lowerText.startsWith('c ');
                 const isDirectCat = ['foto', 'gambar', 'video', 'doc', 'dokumen', 'pdf', 'audio', 'musik'].includes(lowerText);
 
                 if (isCekBase || isDirectCat) {
@@ -1273,6 +1355,30 @@ async function startBot() {
 
                             const stats = fs.statSync(tempFilePath);
 
+                            // ANTI DUPLIKAT: Cek apakah file dari link ini sudah pernah diunggah
+                            const fileHash = await getFileHash(tempFilePath);
+                            const isForce = /(#force|#lagi|#ulang)\b/i.test(rawText);
+
+                            if (!isForce) {
+                                const duplicate = findDuplicateInHistory(fileHash, stats.size, fileName, senderClean);
+                                if (duplicate) {
+                                    try { fs.unlinkSync(tempFilePath); } catch (e) { }
+                                    try { await sock.sendMessage(remoteJid, { react: { text: 'ℹ️', key: msg.key } }); } catch (e) { }
+
+                                    const dupMsg =
+                                        `⚠️ *File Duplikat Terdeteksi*\n\n` +
+                                        `Berkas dari link ini sudah ada di riwayat Anda:\n` +
+                                        `• Nama: \`${duplicate.name}\`\n` +
+                                        `• Ukuran: ${duplicate.size}\n` +
+                                        `• Folder: \`${duplicate.folder || 'Root Drive'}\`\n\n` +
+                                        `🔗 Link File:\n${duplicate.link}\n\n` +
+                                        `_Tips: Tambahkan \`#force\` jika tetap ingin mengunggah ulang._`;
+
+                                    await sock.sendMessage(remoteJid, { text: dupMsg }, { quoted: msg });
+                                    return;
+                                }
+                            }
+
                             await sock.sendMessage(remoteJid, { react: { text: '☁️', key: msg.key } });
 
                             const uploadResult = await uploadFileStream({
@@ -1296,6 +1402,8 @@ async function startBot() {
                                 id: uploadResult.id,
                                 name: uploadResult.name,
                                 size: formatBytes(uploadResult.size || stats.size),
+                                rawBytes: uploadResult.size || stats.size,
+                                fileHash: fileHash,
                                 time: timeStr,
                                 link: directLink,
                                 folder: uploadResult.folderName,
@@ -1593,13 +1701,15 @@ async function startBot() {
                     }
                     continue;
                 }
+            } // Akhir blok perintah isCommandAllowed
 
-                const mediaInfo = extractMediaContent(msg.message);
+            const mediaInfo = extractMediaContent(msg.message);
                 if (!mediaInfo) {
-                    if (textBody && !isFromMe) {
+                    // Hanya kirim sambutan jika di chat pribadi (tidak spam di grup)
+                    if (!isGroup && rawText && !isFromMe) {
                         const greetingMsg =
                             `*Google Drive Bot*\n\n` +
-                            `Kirim file apa pun (dokumen, foto, video) untuk diunggah otomatis dalam resolusi asli tanpa kompresi.\n\n` +
+                            `Kirim file apa pun (dokumen, foto, video, VN) untuk diunggah otomatis dalam resolusi asli tanpa kompresi.\n\n` +
                             `• Ketik \`menu\` untuk panduan fitur\n` +
                             `• Ketik \`status\` untuk info kuota & profil\n` +
                             `• Ketik \`cek\` untuk riwayat file`;
@@ -1609,12 +1719,35 @@ async function startBot() {
                     continue;
                 }
 
-                let { type: mediaType, payload, fileName, mimetype, fileLength, caption } = mediaInfo;
+                let { type: mediaType, payload, fileName, mimetype, fileLength, caption, isPtt, contextInfo } = mediaInfo;
+
+                // Mode Grup Pintar:
+                // Jika file dikirim di grup WhatsApp, hanya proses jika:
+                // 1. Caption mengandung hashtag: #drive, #gdrive, #upload, #simpan, #up
+                // 2. ATAU bot di-mention di caption/pesan (@bot)
+                // 3. ATAU me-reply pesan dari bot
+                if (isGroup && groupMode === 'smart') {
+                    const mediaCaption = (caption || '').toLowerCase();
+                    const mediaMentions = contextInfo?.mentionedJid || [];
+                    const isMediaMentioningBot = (myBotNumber && mediaMentions.some(j => j.includes(myBotNumber))) ||
+                        (myBotNumber && mediaCaption.includes(`@${myBotNumber}`));
+                    const isMediaReplyingBot = myBotNumber && (contextInfo?.participant || '').includes(myBotNumber);
+                    const hasDriveTag = /(#drive|#gdrive|#upload|#simpan|#up)\b/i.test(mediaCaption);
+
+                    if (!hasDriveTag && !isMediaMentioningBot && !isMediaReplyingBot) {
+                        // Abaikan media obrolan biasa di grup (stiker, meme) agar tidak memenuhi Drive
+                        continue;
+                    }
+                }
+
+                const cleanCaption = (caption || '').replace(/#(drive|gdrive|upload|simpan|up|force|lagi|ulang)\b/gi, '').trim();
 
                 let customFolder = null;
-                const folderMatch = caption.match(/#([a-zA-Z0-9_-]+)/);
+                const folderMatch = cleanCaption.match(/#([a-zA-Z0-9_-]+)/);
                 if (folderMatch) {
                     customFolder = folderMatch[1];
+                } else if (isPtt) {
+                    customFolder = 'Voice_Note';
                 } else {
                     const sessionFolder = getUserFolderSession(senderClean);
                     if (sessionFolder) {
@@ -1624,7 +1757,7 @@ async function startBot() {
                     }
                 }
 
-                let renameText = caption.replace(/#([a-zA-Z0-9_-]+)/g, '').trim();
+                let renameText = cleanCaption.replace(/#([a-zA-Z0-9_-]+)/g, '').trim();
                 if (renameText && renameText.length > 0) {
                     const ext = path.extname(fileName) || `.${mime.extension(mimetype) || 'bin'}`;
                     if (!renameText.toLowerCase().endsWith(ext.toLowerCase())) {
@@ -1658,6 +1791,30 @@ async function startBot() {
                         await downloadMediaToDisk(payload, mediaType, tempFilePath);
                         const stats = fs.statSync(tempFilePath);
 
+                        // ANTI DUPLIKAT: Cek apakah file sudah pernah diunggah sebelumnya
+                        const fileHash = await getFileHash(tempFilePath);
+                        const isForce = /(#force|#lagi|#ulang)\b/i.test(caption || '');
+
+                        if (!isForce) {
+                            const duplicate = findDuplicateInHistory(fileHash, stats.size, fileName, senderClean);
+                            if (duplicate) {
+                                try { fs.unlinkSync(tempFilePath); } catch (e) { }
+                                try { await sock.sendMessage(remoteJid, { react: { text: 'ℹ️', key: msg.key } }); } catch (e) { }
+
+                                const dupMsg =
+                                    `⚠️ *File Duplikat Terdeteksi*\n\n` +
+                                    `Berkas ini sudah pernah diunggah sebelumnya:\n` +
+                                    `• Nama: \`${duplicate.name}\`\n` +
+                                    `• Ukuran: ${duplicate.size}\n` +
+                                    `• Folder: \`${duplicate.folder || 'Root Drive'}\`\n\n` +
+                                    `🔗 Link File:\n${duplicate.link}\n\n` +
+                                    `_Tips: Tambahkan caption \`#force\` jika tetap ingin mengunggah ulang._`;
+
+                                await sock.sendMessage(remoteJid, { text: dupMsg }, { quoted: msg });
+                                return;
+                            }
+                        }
+
                         try {
                             await sock.sendMessage(remoteJid, { react: { text: '☁️', key: msg.key } });
                         } catch (e) { }
@@ -1689,6 +1846,8 @@ async function startBot() {
                             id: uploadResult.id,
                             name: uploadResult.name,
                             size: formatBytes(uploadResult.size || stats.size),
+                            rawBytes: uploadResult.size || stats.size,
+                            fileHash: fileHash,
                             time: timeStr,
                             link: directLink,
                             folder: uploadResult.folderName,
