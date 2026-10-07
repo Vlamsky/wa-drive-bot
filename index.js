@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const readline = require('readline');
 const { pipeline } = require('stream/promises');
 const {
     makeWASocket,
@@ -14,6 +15,17 @@ const qrcode = require('qrcode-terminal');
 const mime = require('mime-types');
 const archiver = require('archiver');
 require('dotenv').config();
+
+function askQuestion(query) {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+    return new Promise(resolve => rl.question(query, ans => {
+        rl.close();
+        resolve(ans);
+    }));
+}
 
 const {
     uploadFileStream,
@@ -633,6 +645,17 @@ async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
 
+    let pairingNumber = process.env.PAIRING_NUMBER ? normalizePhone(process.env.PAIRING_NUMBER) : null;
+
+    if (!state.creds.registered && !pairingNumber && process.stdin.isTTY) {
+        console.log('\n📲 METODE TAUTAN WHATSAPP:');
+        console.log('Anda bisa menautkan bot dengan KODE PAIRING (8 digit tanpa scan kamera) atau SCAN QR CODE.');
+        const inputNum = await askQuestion('👉 Masukkan nomor WA bot (contoh: 628123456789) atau tekan ENTER untuk Scan QR: ');
+        if (inputNum && inputNum.trim()) {
+            pairingNumber = normalizePhone(inputNum.trim());
+        }
+    }
+
     const sock = makeWASocket({
         version,
         logger: pino({ level: 'silent' }),
@@ -641,12 +664,32 @@ async function startBot() {
         syncFullHistory: false
     });
 
+    if (pairingNumber && !state.creds.registered) {
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(pairingNumber);
+                const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                console.log('\n╔══════════════════════════════════════════════════════╗');
+                console.log(`║  🔑 KODE PAIRING WHATSAPP:  ${formattedCode.padEnd(25)}║`);
+                console.log('╚══════════════════════════════════════════════════════╝\n');
+                console.log('Petunjuk di WhatsApp HP Anda:');
+                console.log('1. Buka WhatsApp Business / WhatsApp biasa di HP');
+                console.log('2. Tekan Titik Tiga (kanan atas) ➔ Perangkat Tertaut ➔ Tautkan Perangkat');
+                console.log('3. Klik di bagian bawah: "Tautkan dengan nomor telepon saja"');
+                console.log(`4. Masukkan kode: ${formattedCode}\n`);
+            } catch (err) {
+                console.error('❌ Gagal meminta Pairing Code:', err.message);
+                console.log('Tips: Pastikan nomor menggunakan kode negara (misal: 628xxx) dan belum login di tempat lain.');
+            }
+        }, 3000);
+    }
+
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr) {
+        if (qr && !pairingNumber) {
             console.log('\n📲 SILAKAN SCAN QR CODE INI DI WHATSAPP:\n');
             qrcode.generate(qr, { small: true });
         }
