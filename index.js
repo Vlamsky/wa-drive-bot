@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { pipeline } = require('stream/promises');
 const {
     makeWASocket,
     useMultiFileAuthState,
@@ -110,15 +111,22 @@ async function getGroupName(sock, groupJid) {
     if (cached && (Date.now() - cached.time < 3600000)) {
         return cached.name;
     }
+    const last4 = groupJid.split('@')[0].slice(-4);
     try {
-        const meta = await sock.groupMetadata(groupJid);
+        const metaPromise = sock.groupMetadata(groupJid);
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 2500));
+        const meta = await Promise.race([metaPromise, timeoutPromise]);
+
         const cleanName = (meta.subject || 'Grup').replace(/[/\\?%*:|"<>]/g, '').trim().replace(/\s+/g, '_');
         const finalName = `[Grup]_${cleanName}`;
         groupMetadataCache.set(groupJid, { name: finalName, time: Date.now() });
         return finalName;
     } catch (e) {
-        const last4 = groupJid.split('@')[0].slice(-4);
-        return `[Grup]_${last4}`;
+        const fallback = `[Grup]_${last4}`;
+        if (!cached) {
+            groupMetadataCache.set(groupJid, { name: fallback, time: Date.now() - 3000000 });
+        }
+        return cached ? cached.name : fallback;
     }
 }
 
@@ -275,7 +283,7 @@ function scheduleBatchDigest(sock, remoteJid, uploadItem) {
         } catch (e) {
             console.error('Error sending batch digest:', e);
         }
-    }, 3500);
+    }, 1500);
 }
 
 
@@ -400,9 +408,16 @@ function getGroupHistory(groupJid = null, limit = 10) {
     return [];
 }
 
+const lidCache = new Map();
+
 function resolveLidToPhone(rawJid) {
-    if (!rawJid) return null;
+    if (!rawJid || !rawJid.includes('@lid')) return null;
     const clean = rawJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+    if (!clean) return null;
+
+    if (lidCache.has(clean)) {
+        return lidCache.get(clean);
+    }
 
     try {
         if (fs.existsSync(AUTH_DIR)) {
@@ -412,13 +427,16 @@ function resolveLidToPhone(rawJid) {
                     const filePath = path.join(AUTH_DIR, file);
                     const content = fs.readFileSync(filePath, 'utf8');
                     if (content.includes(clean)) {
-                        return file.replace('lid-mapping-', '').replace('.json', '');
+                        const phone = file.replace('lid-mapping-', '').replace('.json', '');
+                        lidCache.set(clean, phone);
+                        return phone;
                     }
                 }
             }
         }
     } catch (e) { }
 
+    lidCache.set(clean, null);
     return null;
 }
 
@@ -429,7 +447,15 @@ function normalizePhone(num) {
     return clean;
 }
 
+let cachedWhitelist = null;
+let lastWhitelistRead = 0;
+
 function getWhitelist() {
+    const now = Date.now();
+    if (cachedWhitelist && (now - lastWhitelistRead < 30000)) {
+        return cachedWhitelist;
+    }
+
     let list = [];
     try {
         if (fs.existsSync(WHITELIST_FILE)) {
@@ -442,10 +468,15 @@ function getWhitelist() {
     envAllowed.forEach(num => {
         if (!list.includes(num)) list.push(num);
     });
+
+    cachedWhitelist = list;
+    lastWhitelistRead = now;
     return list;
 }
 
 function saveWhitelist(list) {
+    cachedWhitelist = list;
+    lastWhitelistRead = Date.now();
     fs.writeFileSync(WHITELIST_FILE, JSON.stringify(list, null, 2));
 }
 
@@ -590,16 +621,7 @@ function extractMediaContent(message) {
 async function downloadMediaToDisk(mediaPayload, mediaType, outputPath) {
     const stream = await downloadContentFromMessage(mediaPayload, mediaType);
     const writeStream = fs.createWriteStream(outputPath);
-
-    for await (const chunk of stream) {
-        writeStream.write(chunk);
-    }
-
-    return new Promise((resolve, reject) => {
-        writeStream.end();
-        writeStream.on('finish', resolve);
-        writeStream.on('error', reject);
-    });
+    await pipeline(stream, writeStream);
 }
 
 /**
@@ -716,10 +738,14 @@ async function startBot() {
                 }
 
                 let groupSubjectName = null;
-                if (isGroup) {
-                    groupSubjectName = await getGroupName(sock, remoteJid);
-                }
-                const targetCloudFolder = isGroup ? (groupSubjectName || `[Grup]_${remoteJid.split('@')[0].slice(-4)}`) : userFolderName;
+                let targetCloudFolder = userFolderName;
+                const resolveTargetFolder = async () => {
+                    if (isGroup && !groupSubjectName) {
+                        groupSubjectName = await getGroupName(sock, remoteJid);
+                        targetCloudFolder = groupSubjectName || `[Grup]_${remoteJid.split('@')[0].slice(-4)}`;
+                    }
+                    return targetCloudFolder;
+                };
 
                 const rawText = (
                     msg.message.conversation ||
@@ -816,6 +842,7 @@ async function startBot() {
 
                         let profileMsg = '';
                         if (isGroup) {
+                            await resolveTargetFolder();
                             profileMsg =
                                 `*Status Bot di Grup*\n\n` +
                                 `• Grup: *${groupSubjectName || 'WhatsApp Group'}*\n` +
@@ -849,6 +876,7 @@ async function startBot() {
                     if (lowerText === 'drive' || lowerText === 'gdrive' || lowerText === 'link folder' || lowerText === 'folder link' || lowerText === 'd') {
                         try {
                             if (isGroup) {
+                                await resolveTargetFolder();
                                 const folderInfo = await getUserFolderInfo(targetCloudFolder);
                                 const folderMsg =
                                     `*Folder Google Drive Grup*\n\n` +
@@ -885,6 +913,7 @@ async function startBot() {
                         if (!arg || lowerArg === 'status' || lowerArg === 'cek' || lowerArg === 'link') {
                             const current = getUserFolderSession(senderClean);
                             try {
+                                await resolveTargetFolder();
                                 const folderInfo = await getUserFolderInfo(targetCloudFolder, current);
                                 if (current) {
                                     await sock.sendMessage(remoteJid, {
@@ -1472,6 +1501,7 @@ async function startBot() {
 
                             await sock.sendMessage(remoteJid, { react: { text: '☁️', key: msg.key } });
 
+                            await resolveTargetFolder();
                             const uploadResult = await uploadFileStream({
                                 filePath: tempFilePath,
                                 fileName: fileName,
@@ -1550,6 +1580,7 @@ async function startBot() {
                     try {
                         await sock.sendMessage(remoteJid, { react: { text: '⏳', key: msg.key } });
 
+                        await resolveTargetFolder();
                         const folderInfo = await getUserFolderInfo(targetCloudFolder, folderQuery);
                         if (!folderInfo || !folderInfo.folderId) {
                             throw new Error(`Folder "${folderQuery}" tidak ditemukan di Google Drive ${isGroup ? 'grup ini' : 'Anda'}.`);
@@ -1931,6 +1962,7 @@ async function startBot() {
                             await sock.sendMessage(remoteJid, { react: { text: '☁️', key: msg.key } });
                         } catch (e) { }
 
+                        await resolveTargetFolder();
                         const uploadResult = await uploadFileStream({
                             filePath: tempFilePath,
                             fileName: fileName,

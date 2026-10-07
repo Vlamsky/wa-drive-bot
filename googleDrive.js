@@ -27,10 +27,15 @@ function getOAuth2Client() {
     return new google.auth.OAuth2(client_id, client_secret, redirectUri);
 }
 
+let cachedDriveClient = null;
+const folderCache = new Map();
+
 /**
  * Memastikan koneksi terotentikasi ke Google Drive
  */
 async function getDriveClient() {
+    if (cachedDriveClient) return cachedDriveClient;
+
     const oAuth2Client = getOAuth2Client();
 
     if (!fs.existsSync(TOKEN_PATH)) {
@@ -51,13 +56,19 @@ async function getDriveClient() {
         fs.writeFileSync(TOKEN_PATH, JSON.stringify(updatedToken, null, 2));
     });
 
-    return google.drive({ version: 'v3', auth: oAuth2Client });
+    cachedDriveClient = google.drive({ version: 'v3', auth: oAuth2Client });
+    return cachedDriveClient;
 }
 
 /**
- * Mencari atau membuat folder baru di Google Drive
+ * Mencari atau membuat folder baru di Google Drive (dengan in-memory cache cepat)
  */
 async function getOrCreateFolder(drive, folderName, parentId = null) {
+    const cacheKey = `${parentId || 'root'}:${folderName}`;
+    if (folderCache.has(cacheKey)) {
+        return folderCache.get(cacheKey);
+    }
+
     let query = `name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
     if (parentId) {
         query += ` and '${parentId}' in parents`;
@@ -85,19 +96,20 @@ async function getOrCreateFolder(drive, folderName, parentId = null) {
             fields: 'id'
         });
         folderId = folderRes.data.id;
+
+        // Set permission agar folder bisa dibuka siapa saja yang memiliki link tanpa minta izin ke owner
+        try {
+            await drive.permissions.create({
+                fileId: folderId,
+                requestBody: {
+                    role: 'reader',
+                    type: 'anyone'
+                }
+            });
+        } catch (e) {}
     }
 
-    // Set permission agar folder bisa dibuka siapa saja yang memiliki link tanpa minta izin ke owner
-    try {
-        await drive.permissions.create({
-            fileId: folderId,
-            requestBody: {
-                role: 'reader',
-                type: 'anyone'
-            }
-        });
-    } catch (e) {}
-
+    folderCache.set(cacheKey, folderId);
     return folderId;
 }
 
@@ -170,15 +182,24 @@ async function deleteFileFromDrive(fileId) {
     return true;
 }
 
+let quotaCache = null;
+let quotaCacheTime = 0;
+
 /**
- * Mengambil informasi kapasitas / storage Google Drive
+ * Mengambil informasi kapasitas / storage Google Drive (dengan in-memory cache 3 menit)
  */
 async function getDriveQuota() {
+    const now = Date.now();
+    if (quotaCache && (now - quotaCacheTime < 180000)) {
+        return quotaCache;
+    }
     const drive = await getDriveClient();
     const res = await drive.about.get({
         fields: 'storageQuota, user'
     });
-    return res.data;
+    quotaCache = res.data;
+    quotaCacheTime = now;
+    return quotaCache;
 }
 
 /**
