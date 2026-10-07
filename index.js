@@ -813,19 +813,33 @@ async function startBot() {
                 ).trim();
 
                 // Cek apakah bot di-mention di teks
+                const myBotLid = sock.user?.lid ? sock.user.lid.split(':')[0].split('@')[0] : '';
+                const myBotJid = sock.user?.id ? sock.user.id.split(':')[0] : '';
                 const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
-                const isBotMentioned = (myBotNumber && mentionedJids.some(j => j.includes(myBotNumber))) ||
-                    (myBotNumber && rawText.includes(`@${myBotNumber}`));
+                const isBotMentioned = (myBotNumber && mentionedJids.some(j => {
+                    const clean = normalizePhone(resolveLidToPhone(j) || j);
+                    return clean === myBotNumber || (myBotLid && j.includes(myBotLid)) || (myBotJid && j.includes(myBotJid));
+                })) ||
+                (myBotNumber && rawText.includes(`@${myBotNumber}`)) ||
+                /\b@?(bot|wa-?drive)\b/i.test(rawText);
 
                 // Cek apakah me-reply pesan dari bot
                 const quotedParticipant = msg.message.extendedTextMessage?.contextInfo?.participant || '';
-                const isReplyingBot = myBotNumber && quotedParticipant.includes(myBotNumber);
+                const isReplyingBot = myBotNumber && (
+                    quotedParticipant.includes(myBotNumber) ||
+                    (myBotLid && quotedParticipant.includes(myBotLid)) ||
+                    (myBotJid && quotedParticipant.includes(myBotJid))
+                );
 
-                // Normalisasi teks perintah: hilangkan mention bot (@bot)
-                let commandText = rawText;
-                if (myBotNumber && commandText.includes(`@${myBotNumber}`)) {
-                    commandText = commandText.replace(new RegExp(`@${myBotNumber}`, 'g'), '').trim();
-                }
+                // Normalisasi teks perintah: hilangkan mention bot (@bot atau @nomor)
+                let commandText = rawText
+                    .replace(new RegExp(`@${myBotNumber}\\b`, 'g'), '')
+                    .replace(/@\d{5,16}\b/g, (match) => {
+                        const num = match.slice(1);
+                        return (num === myBotNumber) ? '' : match;
+                    })
+                    .replace(/\b@bot\b/gi, '')
+                    .trim();
 
                 // Cek apakah perintah diawali prefix (!, ., /, #)
                 const hasPrefix = /^[\!\.\/\#]/.test(commandText);
@@ -843,6 +857,26 @@ async function startBot() {
                 const isCommandAllowed = !isGroup || groupMode === 'all' || hasPrefix || isBotMentioned || isReplyingBot;
 
                 if (isCommandAllowed) {
+                    // Respons ramah jika di grup hanya memanggil/mention bot tanpa perintah atau sekadar salam
+                    if (isGroup && (isBotMentioned || isReplyingBot) && (!lowerText || ['halo', 'hi', 'hai', 'p', 'ping', 'tes', 'test', 'ya', 'bot'].includes(lowerText))) {
+                        const senderTag = `@${senderClean}`;
+                        const greetingGroup =
+                            `👋 Halo ${senderTag}!\n\n` +
+                            `Saya *Bot Google Drive Grup* siap membantu. ☁️\n\n` +
+                            `📌 *Perintah Cepat Grup:*\n` +
+                            `• \`!menu\` ➔ Panduan lengkap fitur grup\n` +
+                            `• \`!drive\` ➔ Buka link folder Google Drive grup ini\n` +
+                            `• \`!cek\` ➔ Riwayat berkas yang telah diunggah\n` +
+                            `• Kirim file + caption \`#drive\` ➔ Simpan ke Drive grup\n\n` +
+                            `_Tips: Anda bisa mention saya disertai perintah (contoh: \`@bot menu\`, \`@bot drive\`, \`@bot cek\`) atau gunakan tanda seru (\`!menu\`)._`;
+
+                        await sock.sendMessage(remoteJid, {
+                            text: greetingGroup,
+                            mentions: [senderJid]
+                        }, { quoted: msg });
+                        continue;
+                    }
+
                     // ==========================================
                     // 1. FITUR MENU / HELP
                     // ==========================================
@@ -1954,9 +1988,17 @@ async function startBot() {
                 if (isGroup && groupMode === 'smart') {
                     const mediaCaption = (caption || '').toLowerCase();
                     const mediaMentions = contextInfo?.mentionedJid || [];
-                    const isMediaMentioningBot = (myBotNumber && mediaMentions.some(j => j.includes(myBotNumber))) ||
-                        (myBotNumber && mediaCaption.includes(`@${myBotNumber}`));
-                    const isMediaReplyingBot = myBotNumber && (contextInfo?.participant || '').includes(myBotNumber);
+                    const isMediaMentioningBot = (myBotNumber && mediaMentions.some(j => {
+                        const clean = normalizePhone(resolveLidToPhone(j) || j);
+                        return clean === myBotNumber || (myBotLid && j.includes(myBotLid)) || (myBotJid && j.includes(myBotJid));
+                    })) ||
+                    (myBotNumber && mediaCaption.includes(`@${myBotNumber}`)) ||
+                    /\b@?(bot|wa-?drive)\b/i.test(mediaCaption);
+                    const isMediaReplyingBot = myBotNumber && (
+                        (contextInfo?.participant || '').includes(myBotNumber) ||
+                        (myBotLid && (contextInfo?.participant || '').includes(myBotLid)) ||
+                        (myBotJid && (contextInfo?.participant || '').includes(myBotJid))
+                    );
                     const hasDriveTag = /(#drive|#gdrive|#upload|#simpan|#up)\b/i.test(mediaCaption);
 
                     if (!hasDriveTag && !isMediaMentioningBot && !isMediaReplyingBot) {
