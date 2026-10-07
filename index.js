@@ -8,7 +8,9 @@ const {
     useMultiFileAuthState,
     DisconnectReason,
     downloadContentFromMessage,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+    Browsers
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
@@ -660,8 +662,14 @@ async function startBot() {
         version,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        auth: state,
-        syncFullHistory: false
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
+        },
+        browser: Browsers.ubuntu('Chrome'),
+        syncFullHistory: false,
+        generateHighQualityLinkPreview: false,
+        markOnlineOnConnect: true
     });
 
     if (pairingNumber && !state.creds.registered) {
@@ -695,13 +703,21 @@ async function startBot() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect =
-                (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
-                console.log('🔄 Menghubungkan kembali...');
-                startBot();
+            const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+            const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+
+            if (isLoggedOut) {
+                console.log('\n❌ Sesi Anda keluar / dibatalkan oleh WhatsApp (Logged out - 401).');
+                try {
+                    if (fs.existsSync(AUTH_DIR)) {
+                        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                        console.log('🗑️ Sesi lama di folder session_auth telah otomatis dibersihkan.');
+                    }
+                } catch (e) { }
+                console.log('👉 Silakan jalankan ulang bot: "node index.js" untuk membuat kode pairing baru di WA HP.\n');
             } else {
-                console.log('❌ Anda keluar dari sesi (Logged out).');
+                console.log(`🔄 Koneksi terputus (${statusCode || 'reconnecting'}). Menghubungkan kembali...`);
+                startBot();
             }
         } else if (connection === 'open') {
             console.log('==================================================');
