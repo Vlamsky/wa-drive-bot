@@ -788,32 +788,56 @@ async function startBot() {
                     // 1. FITUR MENU / HELP
                     // ==========================================
                     if (lowerText === 'menu' || lowerText === 'help' || lowerText === 'bantuan' || lowerText === 'm') {
-                        const menuText =
-                            `*Google Drive Bot*\n` +
-                            `Upload file otomatis dengan resolusi asli.\n\n` +
-                            `*Upload & Folder*\n` +
-                            `• Kirim file langsung ➔ simpan otomatis per kategori\n` +
-                            `• Caption \`#nama\` ➔ simpan ke folder spesifik\n` +
-                            `• \`upload <link>\` ➔ upload file dari URL internet\n` +
-                            `• \`drive\` / \`d\` ➔ link folder pribadi di Google Drive\n` +
-                            `• \`folder <nama>\` ➔ set folder sebelum forward massal\n` +
-                            `• \`folder reset\` ➔ kembali ke mode otomatis\n\n` +
-                            `*Manajemen File & Riwayat*\n` +
-                            `• \`cek\` / \`c\` ➔ riwayat file & link preview\n` +
-                            `• \`cek foto\` / \`cek doc\` / \`cek video\` ➔ filter riwayat\n` +
-                            `• \`rename <no> <nama baru>\` ➔ ganti nama file di Drive\n` +
-                            `• \`ambil <no>\` ➔ unduh file ke WhatsApp\n` +
-                            `• \`zip <nama folder>\` ➔ unduh 1 folder jadi file ZIP\n` +
-                            `• \`hapus <no>\` (atau \`hapus 1-3\`) ➔ hapus dari Drive\n` +
-                            `• Balas pesan upload dengan \`hapus\` / \`ambil\` / \`rename <nama>\`\n\n` +
-                            `*Info & Akses*\n` +
-                            `• \`status\` / \`s\` ➔ profil & kuota penyimpanan\n` +
-                            `• \`cari <kata>\` ➔ cari file di riwayat\n` +
-                            `• \`publik <no>\` / \`privat <no>\` ➔ atur izin link\n\n` +
-                            `*Grup WhatsApp (Mode Pintar)*\n` +
-                            `• Beri caption \`#drive\` pada file agar tersimpan ke cloud\n` +
-                            `• Awali perintah dengan prefix \`!\`, \`.\`, \`/\` (contoh: \`!menu\`)\n` +
-                            `• File grup otomatis tersimpan di folder khusus grup ini`;
+                        let menuText = '';
+                        if (isGroup) {
+                            menuText =
+                                `*Google Drive Bot — Mode Grup* 👥\n` +
+                                `Penyimpanan bersama untuk seluruh anggota grup.\n\n` +
+                                `*Upload ke Drive Grup*\n` +
+                                `• Kirim file + caption \`#drive\` ➔ simpan ke folder grup\n` +
+                                `• Kirim file + caption \`#drive #nama\` ➔ simpan ke sub-folder\n` +
+                                `• \`!upload <link>\` ➔ upload file dari URL internet\n\n` +
+                                `*Akses & Riwayat Grup*\n` +
+                                `• \`!drive\` / \`!d\` ➔ link folder Google Drive grup ini\n` +
+                                `• \`!cek\` / \`!c\` ➔ riwayat berkas grup & preview\n` +
+                                `• \`!cek foto\` / \`!cek doc\` / \`!cek video\` ➔ filter riwayat\n` +
+                                `• \`!cari <kata>\` ➔ cari berkas di riwayat grup\n\n` +
+                                `*Manajemen File*\n` +
+                                `• \`!ambil <no>\` ➔ unduh file grup ke WhatsApp\n` +
+                                `• \`!zip <nama folder>\` ➔ unduh 1 folder jadi file ZIP\n` +
+                                `• \`!rename <no> <nama baru>\` ➔ ganti nama file (pengunggah)\n` +
+                                `• \`!hapus <no>\` (atau \`!hapus 1-3\`) ➔ hapus file (pengunggah)\n` +
+                                `• Balas pesan upload dengan \`!ambil\` / \`!hapus\` / \`!rename\`\n\n` +
+                                `*Info Grup*\n` +
+                                `• \`!status\` / \`!s\` ➔ folder grup & kapasitas Drive\n` +
+                                `• \`!menu\` ➔ panduan fitur grup\n\n` +
+                                `_Tips: Awali perintah dengan prefix \`!\` (contoh: \`!drive\`, \`!cek\`) agar obrolan grup tetap rapi._`;
+                        } else {
+                            menuText =
+                                `*Google Drive Bot — Chat Pribadi* 👤\n` +
+                                `Upload otomatis & resolusi asli ke folder cloud Anda.\n\n` +
+                                `*Upload & Folder*\n` +
+                                `• Kirim file langsung ➔ otomatis tersimpan per kategori\n` +
+                                `• Beri caption \`#nama\` ➔ simpan ke folder spesifik\n` +
+                                `• \`upload <link>\` ➔ upload file dari URL internet\n` +
+                                `• \`drive\` / \`d\` ➔ link folder pribadi di Google Drive\n` +
+                                `• \`folder <nama>\` ➔ kunci folder sebelum forward banyak file\n` +
+                                `• \`folder reset\` ➔ kembali ke mode otomatis\n\n` +
+                                `*Manajemen File & Riwayat*\n` +
+                                `• \`cek\` / \`c\` ➔ riwayat file & link Google Drive\n` +
+                                `• \`cek foto\` / \`cek doc\` / \`cek video\` ➔ filter riwayat\n` +
+                                `• \`ambil <no>\` ➔ unduh file ke WhatsApp\n` +
+                                `• \`zip <nama folder>\` ➔ unduh 1 folder jadi file ZIP\n` +
+                                `• \`rename <no> <nama baru>\` ➔ ganti nama file di Drive\n` +
+                                `• \`hapus <no>\` (atau \`hapus 1-3\`) ➔ hapus dari Drive\n` +
+                                `• Balas pesan upload dengan \`hapus\` / \`ambil\` / \`rename\`\n\n` +
+                                `*Info & Akses*\n` +
+                                `• \`status\` / \`s\` ➔ profil & kuota penyimpanan\n` +
+                                `• \`cari <kata>\` ➔ cari file di riwayat pribadi\n` +
+                                `• \`publik <no>\` / \`privat <no>\` ➔ atur izin link\n` +
+                                `• \`menu\` ➔ panduan fitur lengkap\n\n` +
+                                `_Tips: Di chat pribadi, Anda bebas mengetik perintah langsung tanpa prefix._`;
+                        }
 
                         await sock.sendMessage(remoteJid, { text: menuText }, { quoted: msg });
                         continue;
