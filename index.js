@@ -51,9 +51,6 @@ if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
 
-/**
- * Membersihkan file sementara yang berumur lebih dari maxAgeMs (default: 30 menit)
- */
 function cleanupTempFiles(maxAgeMs = 30 * 60 * 1000) {
     try {
         if (!fs.existsSync(TEMP_DIR)) return;
@@ -78,9 +75,7 @@ function cleanupTempFiles(maxAgeMs = 30 * 60 * 1000) {
     }
 }
 
-// Bersihkan file sementara yang tersisa dari sesi sebelumnya saat bot mulai
 cleanupTempFiles(10 * 60 * 1000);
-// Jalankan pembersihan berkala setiap 30 menit
 setInterval(() => cleanupTempFiles(30 * 60 * 1000), 30 * 60 * 1000);
 
 function getFolderSessions() {
@@ -116,9 +111,6 @@ function clearUserFolderSession(phone) {
 
 const groupMetadataCache = new Map();
 
-/**
- * Mengambil nama subjek grup WhatsApp dengan caching untuk nama folder Google Drive
- */
 async function getGroupName(sock, groupJid) {
     if (!groupJid || !groupJid.endsWith('@g.us')) return null;
     const cached = groupMetadataCache.get(groupJid);
@@ -184,10 +176,6 @@ function getSmartCategory(fileName, mimetype = '') {
     return 'Lainnya';
 }
 
-/**
- * Antrean tugas asinkron dengan pembatasan konkurensi (Concurrency Limiter)
- * Mencegah overload CPU/RAM dan rate limit Google Drive API
- */
 class TaskQueue {
     constructor(concurrency = 2) {
         this.concurrency = concurrency;
@@ -228,7 +216,7 @@ class TaskQueue {
     }
 }
 
-const uploadQueue = new TaskQueue(2); // Batas maksimal 2 proses upload sekaligus
+const uploadQueue = new TaskQueue(2); 
 
 const batchUploadQueue = new Map();
 
@@ -300,10 +288,6 @@ function scheduleBatchDigest(sock, remoteJid, uploadItem) {
     }, 1500);
 }
 
-
-/**
- * Menghitung hash MD5 dari file untuk deduplikasi akurat
- */
 function getFileHash(filePath) {
     return new Promise((resolve, reject) => {
         const hash = crypto.createHash('md5');
@@ -314,27 +298,20 @@ function getFileHash(filePath) {
     });
 }
 
-/**
- * Mencari apakah file sudah pernah diunggah sebelumnya (Anti-Duplikat)
- */
 function findDuplicateInHistory(fileHash, rawBytes, fileName, userPhone = null, groupJid = null) {
     try {
         if (!fs.existsSync(HISTORY_FILE)) return null;
         const history = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
         for (const item of history) {
-            // Isolasi ruang lingkup duplikat: jika di grup, hanya cocokkan dengan file di grup tersebut
             if (groupJid) {
                 if (item.groupJid !== groupJid) continue;
             } else {
-                // Jika di private chat (DM), jangan samakan dengan file grup
                 if (item.groupJid) continue;
             }
 
-            // Cocokkan berdasarkan MD5 hash jika ada
             if (fileHash && item.fileHash && item.fileHash === fileHash) {
                 return item;
             }
-            // Atau cocokkan jika nama file dan ukuran bytes sama persis
             if (rawBytes && item.rawBytes === rawBytes && item.name === fileName) {
                 if (!userPhone || !item.uploader || item.uploader === userPhone || item.uploader.endsWith(userPhone) || userPhone.endsWith(item.uploader)) {
                     return item;
@@ -557,9 +534,6 @@ function isSenderAllowed(jid, fromMe, participant) {
     );
 }
 
-/**
- * Mengekstrak payload media dan caption dari berbagai jenis pesan
- */
 function extractMediaContent(message) {
     if (!message) return null;
 
@@ -629,18 +603,12 @@ function extractMediaContent(message) {
     return null;
 }
 
-/**
- * Mengunduh media secara streaming ke file lokal
- */
 async function downloadMediaToDisk(mediaPayload, mediaType, outputPath) {
     const stream = await downloadContentFromMessage(mediaPayload, mediaType);
     const writeStream = fs.createWriteStream(outputPath);
     await pipeline(stream, writeStream);
 }
 
-/**
- * Fungsi utama Bot WhatsApp
- */
 async function startBot() {
     console.log('🤖 Menginisialisasi WhatsApp Client...');
 
@@ -729,9 +697,6 @@ async function startBot() {
         }
     });
 
-    // ==========================================
-    // AUTO REJECT CALL (Tolak Telepon & Video Call Otomatis)
-    // ==========================================
     sock.ev.on('call', async (calls) => {
         for (const call of calls) {
             if (call.status === 'offer') {
@@ -765,8 +730,6 @@ async function startBot() {
                     ''
                 ).trim();
 
-                // Abaikan pesan keluar (ketika nomor bot dipakai chat/kirim file ke orang atau nomor lain)
-                // Tetap izinkan jika pesan keluar tersebut adalah perintah eksplisit (misal: !menu, @bot)
                 const myBotNumber = sock.user?.id ? sock.user.id.split(':')[0].split('@')[0].replace(/[^0-9]/g, '') : '';
                 const targetNumber = remoteJid ? remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
 
@@ -794,9 +757,6 @@ async function startBot() {
                     continue;
                 }
 
-                // Cek izin akses:
-                // - Di chat pribadi: nomor harus terdaftar di whitelist / allowed numbers
-                // - Di grup WhatsApp: seluruh anggota grup diizinkan menggunakan bot bersama
                 if (!isGroup && !isSenderAllowed(remoteJid, isFromMe, msg.key.participant)) {
                     if (!isFromMe) {
                         await sock.sendMessage(remoteJid, {
@@ -816,7 +776,6 @@ async function startBot() {
                     return targetCloudFolder;
                 };
 
-                // Cek apakah bot di-mention di teks
                 const myBotLid = sock.user?.lid ? sock.user.lid.split(':')[0].split('@')[0] : '';
                 const myBotJid = sock.user?.id ? sock.user.id.split(':')[0] : '';
                 const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
@@ -828,7 +787,6 @@ async function startBot() {
                 /@~?(bot|drive|wa-?drive)/i.test(rawText) ||
                 /\b(bot)\b/i.test(rawText);
 
-                // Cek apakah me-reply pesan dari bot
                 const quotedParticipant = msg.message.extendedTextMessage?.contextInfo?.participant || '';
                 const isReplyingBot = myBotNumber && (
                     quotedParticipant.includes(myBotNumber) ||
@@ -836,7 +794,6 @@ async function startBot() {
                     (myBotJid && quotedParticipant.includes(myBotJid))
                 );
 
-                // Normalisasi teks perintah: hilangkan mention bot (@bot, @~BOT, @nomor, etc.)
                 let commandText = rawText
                     .replace(new RegExp(`@${myBotNumber}\\b`, 'gi'), '')
                     .replace(/@\d{5,16}/g, '')
@@ -847,7 +804,6 @@ async function startBot() {
                     .replace(/^bot\b/gi, '')
                     .trim();
 
-                // Cek apakah perintah diawali prefix (!, ., /, #)
                 const hasPrefix = /^[\!\.\/\#]/.test(commandText);
                 if (hasPrefix) {
                     commandText = commandText.slice(1).trim();
@@ -856,14 +812,9 @@ async function startBot() {
                 const textBody = commandText;
                 const lowerText = commandText.toLowerCase();
 
-                // Mode Grup Pintar: di grup WhatsApp, perintah teks hanya diproses jika:
-                // 1. Memiliki prefix (!, ., /, #) ATAU
-                // 2. Bot di-mention (@bot, @~BOT, tag kontak) ATAU
-                // 3. Me-reply pesan dari bot
                 const isCommandAllowed = !isGroup || groupMode === 'all' || hasPrefix || isBotMentioned || isReplyingBot;
 
                 if (isCommandAllowed) {
-                    // Respons ramah jika di grup hanya memanggil/mention bot tanpa perintah atau sekadar salam
                     const isCallingBot = !lowerText || ['halo', 'hi', 'hai', 'p', 'ping', 'tes', 'test', 'ya', 'bot'].includes(lowerText);
                     if (isGroup && (isBotMentioned || isReplyingBot) && isCallingBot) {
                         const senderTag = `@${senderClean}`;
@@ -884,9 +835,6 @@ async function startBot() {
                         continue;
                     }
 
-                    // ==========================================
-                    // 1. FITUR MENU / HELP
-                    // ==========================================
                     if (lowerText === 'menu' || lowerText === 'help' || lowerText === 'bantuan' || lowerText === 'm') {
                         let menuText = '';
                         if (isGroup) {
@@ -943,9 +891,6 @@ async function startBot() {
                         continue;
                     }
 
-                    // ==========================================
-                    // 1A. FITUR PROFIL & STATUS
-                    // ==========================================
                     if (lowerText === '.me' || lowerText === 'me' || lowerText === 'status' || lowerText === 'profil' || lowerText === 'profile' || lowerText === 's') {
                         const myHistory = isGroup ? getGroupHistory(remoteJid, 50) : getHistory(senderClean, 50);
                         const totalFiles = myHistory.length;
@@ -994,9 +939,6 @@ async function startBot() {
                         continue;
                     }
 
-                    // ==========================================
-                    // 1B. FITUR AKSES LINK FOLDER DRIVE (DRIVE / LINK FOLDER)
-                    // ==========================================
                     if (lowerText === 'drive' || lowerText === 'gdrive' || lowerText === 'link folder' || lowerText === 'folder link' || lowerText === 'd') {
                         try {
                             if (isGroup) {
@@ -1027,9 +969,6 @@ async function startBot() {
                         continue;
                     }
 
-                    // ==========================================
-                    // 1C. FITUR SET FOLDER SESI (UNTUK FORWARD BANYAK FILE SEKALIGUS)
-                    // ==========================================
                     if (lowerText.startsWith('folder') || lowerText.startsWith('set folder')) {
                         const arg = textBody.replace(/^(set\s+)?folder\s*/i, '').trim();
                         const lowerArg = arg.toLowerCase();
@@ -1091,9 +1030,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 1C. FITUR MANAJEMEN WHITELIST (+user / -user / listuser)
-                // ==========================================
                 if (lowerText.startsWith('+user') || lowerText.startsWith('tambah user')) {
                     if (!isOwner(remoteJid, isFromMe, msg.key.participant)) {
                         await sock.sendMessage(remoteJid, {
@@ -1159,9 +1095,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 2. FITUR CEK RIWAYAT (MENDUKUNG FILTER: FOTO, VIDEO, DOC, AUDIO)
-                // ==========================================
                 const isCekBase = lowerText.startsWith('cek') || lowerText.startsWith('daftar') || lowerText.startsWith('list') || lowerText.startsWith('riwayat') || lowerText === 'c' || lowerText.startsWith('c ');
                 const isDirectCat = ['foto', 'gambar', 'video', 'doc', 'dokumen', 'pdf', 'audio', 'musik'].includes(lowerText);
 
@@ -1262,9 +1195,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 3. FITUR CEK KUOTA
-                // ==========================================
                 if (lowerText === 'kuota' || lowerText === 'storage' || lowerText === 'kapasitas') {
                     try {
                         const quotaData = await getDriveQuota();
@@ -1290,9 +1220,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 4. FITUR CARI FILE (SEARCH)
-                // ==========================================
                 if (lowerText.startsWith('cari ') || lowerText.startsWith('search ')) {
                     const query = textBody.replace(/^(cari|search)\s+/i, '').trim();
                     if (!query) {
@@ -1305,15 +1232,12 @@ async function startBot() {
                     try {
                         let results = [];
                         if (userIsOwner && query.includes('--all')) {
-                            // Admin bisa cari global di Google Drive dengan --all
                             const cleanQ = query.replace('--all', '').trim();
                             results = await searchDriveFiles(cleanQ, 5);
                         } else if (isGroup) {
-                            // Di grup, cari file di riwayat grup
                             const groupHistory = getGroupHistory(remoteJid, 50);
                             results = groupHistory.filter(f => f.name.toLowerCase().includes(query.toLowerCase()));
                         } else {
-                            // Pengguna hanya mencari di antara file miliknya sendiri
                             const myHistory = getHistory(senderClean, 50);
                             results = myHistory.filter(f => f.name.toLowerCase().includes(query.toLowerCase()));
                         }
@@ -1367,7 +1291,6 @@ async function startBot() {
                         }
                     }
 
-                    // Dukungan Swipe / Quote Reply: balas pesan upload dengan kata "ambil"
                     if (!targetFile) {
                         const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
                         const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
@@ -1447,7 +1370,6 @@ async function startBot() {
                             continue;
                         }
                     } else {
-                        // Cek apakah melalui quote reply: balas pesan upload dengan "rename <nama baru>"
                         const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
                         const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
                         const qCaption = quoted?.imageMessage?.caption || quoted?.videoMessage?.caption || quoted?.documentMessage?.caption || '';
@@ -1484,7 +1406,6 @@ async function startBot() {
                     const oldName = targetFile.name;
                     const oldExt = path.extname(oldName);
 
-                    // Pertahankan ekstensi jika pengguna tidak menyertakannya
                     if (oldExt && !newNameInput.toLowerCase().endsWith(oldExt.toLowerCase())) {
                         newNameInput = `${newNameInput}${oldExt}`;
                     }
@@ -1509,9 +1430,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 5C. FITUR REMOTE UPLOAD DARI LINK INTERNET (UPLOAD <URL>)
-                // ==========================================
                 const urlMatch = textBody.match(/https?:\/\/[^\s]+/i);
                 if (urlMatch && (lowerText.startsWith('upload') || lowerText.startsWith('unduh') || lowerText.startsWith('up '))) {
                     const targetUrl = urlMatch[0];
@@ -1598,7 +1516,6 @@ async function startBot() {
 
                             const stats = fs.statSync(tempFilePath);
 
-                            // ANTI DUPLIKAT: Cek apakah file dari link ini sudah pernah diunggah
                             const fileHash = await getFileHash(tempFilePath);
                             const isForce = /(#force|#lagi|#ulang)\b/i.test(rawText);
 
@@ -1710,7 +1627,6 @@ async function startBot() {
                             throw new Error(`Folder "${folderQuery}" tidak ditemukan di Google Drive ${isGroup ? 'grup ini' : 'Anda'}.`);
                         }
 
-                        // 2. Ambil daftar file di dalam folder tersebut
                         const filesInFolder = await getFilesInFolder(folderInfo.folderId, 40);
                         if (filesInFolder.length === 0) {
                             await sock.sendMessage(remoteJid, {
@@ -1723,7 +1639,6 @@ async function startBot() {
                             text: `📦 Sedang menyiapkan ZIP untuk *${filesInFolder.length} file* dari folder *${folderQuery}*... Mohon tunggu sebentar.`
                         }, { quoted: msg });
 
-                        // 3. Download dan buat ZIP
                         const cleanZipName = `${folderQuery.replace(/[^a-zA-Z0-9_-]/g, '_')}_Backup.zip`;
                         const zipFilePath = path.join(TEMP_DIR, `zip_${Date.now()}_${cleanZipName}`);
                         const outputStream = fs.createWriteStream(zipFilePath);
@@ -1769,7 +1684,6 @@ async function startBot() {
                             continue;
                         }
 
-                        // Kirim file ZIP ke WhatsApp
                         await sock.sendMessage(remoteJid, {
                             document: { url: zipFilePath },
                             fileName: cleanZipName,
@@ -1790,9 +1704,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 6. FITUR PERMISSION (PUBLIK / PRIVAT)
-                // ==========================================
                 if (lowerText.startsWith('publik') || lowerText.startsWith('public') ||
                     lowerText.startsWith('privat') || lowerText.startsWith('private')) {
 
@@ -1831,9 +1742,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 6B. FITUR AMBIL LINK FILE
-                // ==========================================
                 if (lowerText.match(/^(link|url)\s+(\d+)$/)) {
                     const match = lowerText.match(/^(link|url)\s+(\d+)$/);
                     const idx = parseInt(match[2], 10);
@@ -1851,9 +1759,6 @@ async function startBot() {
                     continue;
                 }
 
-                // ==========================================
-                // 7. FITUR HAPUS FILE (MENDUKUNG HAPUS BANYAK FILE SEKALIGUS)
-                // ==========================================
                 if (lowerText.startsWith('hapus') || lowerText.startsWith('del') || lowerText === 'batal') {
                     const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
                     const quotedText = (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
@@ -1874,7 +1779,6 @@ async function startBot() {
                     } else if (lowerText === 'hapus semua' || lowerText === 'hapus all' || lowerText === 'del all') {
                         targetItems = [...activeHistory];
                     } else if (lowerText.match(/^(hapus|del)\s+(\d+)\s*-\s*(\d+)$/)) {
-                        // Rentang nomor: contoh hapus 1-5
                         const match = lowerText.match(/^(hapus|del)\s+(\d+)\s*-\s*(\d+)$/);
                         const start = parseInt(match[2], 10);
                         const end = parseInt(match[3], 10);
@@ -1886,7 +1790,6 @@ async function startBot() {
                             }
                         }
                     } else if (lowerText.match(/^(hapus|del)\s+([\d\s,]+)$/)) {
-                        // Beberapa nomor: contoh hapus 1, 2, 3 atau hapus 1 2 3
                         const match = lowerText.match(/^(hapus|del)\s+([\d\s,]+)$/);
                         const rawNums = match[2].split(/[,\s]+/).filter(Boolean);
                         const indices = [...new Set(rawNums.map(n => parseInt(n, 10)).filter(n => !isNaN(n)))];
@@ -1967,11 +1870,10 @@ async function startBot() {
                     }
                     continue;
                 }
-            } // Akhir blok perintah isCommandAllowed
+            } 
 
             const mediaInfo = extractMediaContent(msg.message);
                 if (!mediaInfo) {
-                    // Hanya kirim sambutan jika di chat pribadi (tidak spam di grup)
                     if (!isGroup && rawText && !isFromMe) {
                         const greetingMsg =
                             `*Google Drive Bot*\n\n` +
@@ -1987,11 +1889,6 @@ async function startBot() {
 
                 let { type: mediaType, payload, fileName, mimetype, fileLength, caption, isPtt, contextInfo } = mediaInfo;
 
-                // Mode Grup Pintar:
-                // Jika file dikirim di grup WhatsApp, hanya proses jika:
-                // 1. Caption mengandung hashtag: #drive, #gdrive, #upload, #simpan, #up
-                // 2. ATAU bot di-mention di caption/pesan (@bot)
-                // 3. ATAU me-reply pesan dari bot
                 if (isGroup && groupMode === 'smart') {
                     const mediaCaption = (caption || '').toLowerCase();
                     const mediaMentions = contextInfo?.mentionedJid || [];
@@ -2009,7 +1906,6 @@ async function startBot() {
                     const hasDriveTag = /(#drive|#gdrive|#upload|#simpan|#up)\b/i.test(mediaCaption);
 
                     if (!hasDriveTag && !isMediaMentioningBot && !isMediaReplyingBot) {
-                        // Abaikan media obrolan biasa di grup (stiker, meme) agar tidak memenuhi Drive
                         continue;
                     }
                 }
@@ -2065,7 +1961,6 @@ async function startBot() {
                         await downloadMediaToDisk(payload, mediaType, tempFilePath);
                         const stats = fs.statSync(tempFilePath);
 
-                        // ANTI DUPLIKAT: Cek apakah file sudah pernah diunggah sebelumnya
                         const fileHash = await getFileHash(tempFilePath);
                         const isForce = /(#force|#lagi|#ulang)\b/i.test(caption || '');
 
