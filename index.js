@@ -759,14 +759,22 @@ async function startBot() {
 
                 const remoteJid = msg.key.remoteJid;
                 const isFromMe = msg.key.fromMe;
+                const rawText = (
+                    msg.message.conversation ||
+                    msg.message.extendedTextMessage?.text ||
+                    ''
+                ).trim();
 
                 // Abaikan pesan keluar (ketika nomor bot dipakai chat/kirim file ke orang atau nomor lain)
-                // Bot hanya merespons pesan MASUK dari nomor lain, bukan pesan KELUAR dari nomor bot
+                // Tetap izinkan jika pesan keluar tersebut adalah perintah eksplisit (misal: !menu, @bot)
                 const myBotNumber = sock.user?.id ? sock.user.id.split(':')[0].split('@')[0].replace(/[^0-9]/g, '') : '';
                 const targetNumber = remoteJid ? remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
 
                 if (isFromMe && (!myBotNumber || targetNumber !== myBotNumber)) {
-                    continue;
+                    const isExplicitCmd = /^[\!\.\/\#]/.test(rawText) || /@~?(bot|drive)/i.test(rawText);
+                    if (!isExplicitCmd) {
+                        continue;
+                    }
                 }
 
                 const senderJid = msg.key.participant || remoteJid;
@@ -779,20 +787,22 @@ async function startBot() {
                 const senderDisplayName = shortName || `User_${last4Phone}`;
                 const userIsOwner = isOwner(remoteJid, isFromMe, msg.key.participant);
 
-                // Jika nomor tidak diizinkan, beri tahu nomor tersebut
-                if (!isSenderAllowed(remoteJid, isFromMe, msg.key.participant)) {
-                    if (!remoteJid.endsWith('@g.us') && !isFromMe) {
-                        await sock.sendMessage(remoteJid, {
-                            text: `⛔ *Akses Ditolak*\n\nNomor Anda belum terdaftar di sistem bot ini.\nHubungi pemilik untuk menambahkan nomor Anda ke daftar izin (*whitelist*).`
-                        }, { quoted: msg });
-                    }
-                    continue;
-                }
-
                 const isGroup = remoteJid.endsWith('@g.us');
                 const groupMode = process.env.GROUP_MODE?.trim().toLowerCase() || 'smart';
 
                 if (isGroup && groupMode === 'off') {
+                    continue;
+                }
+
+                // Cek izin akses:
+                // - Di chat pribadi: nomor harus terdaftar di whitelist / allowed numbers
+                // - Di grup WhatsApp: seluruh anggota grup diizinkan menggunakan bot bersama
+                if (!isGroup && !isSenderAllowed(remoteJid, isFromMe, msg.key.participant)) {
+                    if (!isFromMe) {
+                        await sock.sendMessage(remoteJid, {
+                            text: `⛔ *Akses Ditolak*\n\nNomor Anda belum terdaftar di sistem bot ini.\nHubungi pemilik untuk menambahkan nomor Anda ke daftar izin (*whitelist*).`
+                        }, { quoted: msg });
+                    }
                     continue;
                 }
 
@@ -806,12 +816,6 @@ async function startBot() {
                     return targetCloudFolder;
                 };
 
-                const rawText = (
-                    msg.message.conversation ||
-                    msg.message.extendedTextMessage?.text ||
-                    ''
-                ).trim();
-
                 // Cek apakah bot di-mention di teks
                 const myBotLid = sock.user?.lid ? sock.user.lid.split(':')[0].split('@')[0] : '';
                 const myBotJid = sock.user?.id ? sock.user.id.split(':')[0] : '';
@@ -821,7 +825,8 @@ async function startBot() {
                     return clean === myBotNumber || (myBotLid && j.includes(myBotLid)) || (myBotJid && j.includes(myBotJid));
                 })) ||
                 (myBotNumber && rawText.includes(`@${myBotNumber}`)) ||
-                /\b@?(bot|wa-?drive)\b/i.test(rawText);
+                /@~?(bot|drive|wa-?drive)/i.test(rawText) ||
+                /\b(bot)\b/i.test(rawText);
 
                 // Cek apakah me-reply pesan dari bot
                 const quotedParticipant = msg.message.extendedTextMessage?.contextInfo?.participant || '';
@@ -831,14 +836,15 @@ async function startBot() {
                     (myBotJid && quotedParticipant.includes(myBotJid))
                 );
 
-                // Normalisasi teks perintah: hilangkan mention bot (@bot atau @nomor)
+                // Normalisasi teks perintah: hilangkan mention bot (@bot, @~BOT, @nomor, etc.)
                 let commandText = rawText
-                    .replace(new RegExp(`@${myBotNumber}\\b`, 'g'), '')
-                    .replace(/@\d{5,16}\b/g, (match) => {
-                        const num = match.slice(1);
-                        return (num === myBotNumber) ? '' : match;
+                    .replace(new RegExp(`@${myBotNumber}\\b`, 'gi'), '')
+                    .replace(/@\d{5,16}/g, '')
+                    .replace(/@~?[a-zA-Z0-9_\-]+/gi, (match) => {
+                        if (/bot|drive/i.test(match)) return '';
+                        return match;
                     })
-                    .replace(/\b@bot\b/gi, '')
+                    .replace(/^bot\b/gi, '')
                     .trim();
 
                 // Cek apakah perintah diawali prefix (!, ., /, #)
@@ -852,13 +858,14 @@ async function startBot() {
 
                 // Mode Grup Pintar: di grup WhatsApp, perintah teks hanya diproses jika:
                 // 1. Memiliki prefix (!, ., /, #) ATAU
-                // 2. Bot di-mention (@bot) ATAU
+                // 2. Bot di-mention (@bot, @~BOT, tag kontak) ATAU
                 // 3. Me-reply pesan dari bot
                 const isCommandAllowed = !isGroup || groupMode === 'all' || hasPrefix || isBotMentioned || isReplyingBot;
 
                 if (isCommandAllowed) {
                     // Respons ramah jika di grup hanya memanggil/mention bot tanpa perintah atau sekadar salam
-                    if (isGroup && (isBotMentioned || isReplyingBot) && (!lowerText || ['halo', 'hi', 'hai', 'p', 'ping', 'tes', 'test', 'ya', 'bot'].includes(lowerText))) {
+                    const isCallingBot = !lowerText || ['halo', 'hi', 'hai', 'p', 'ping', 'tes', 'test', 'ya', 'bot'].includes(lowerText);
+                    if (isGroup && (isBotMentioned || isReplyingBot) && isCallingBot) {
                         const senderTag = `@${senderClean}`;
                         const greetingGroup =
                             `👋 Halo ${senderTag}!\n\n` +
